@@ -3,14 +3,21 @@
 Stores the item list in a SQLite database (items.db, next to this file),
 compares Physical Stock against Committed Stock, and flags items that need attention.
 Import/export: CSV, Excel (.xlsx), and SQLite (.db) backup/restore.
+
+While the app is open it also serves ItemChecker.html at http://127.0.0.1:8765/
+so the browser version reads and saves the same items.db.
 """
 import csv
 import datetime
+import json
 import os
 import re
 import sqlite3
 import sys
+import threading
 import tkinter as tk
+import webbrowser
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from tkinter import filedialog, messagebox, ttk
 
 try:
@@ -24,6 +31,9 @@ if getattr(sys, 'frozen', False):
 else:
     APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.environ.get('ITEMCHECKER_DB') or os.path.join(APP_DIR, 'items.db')
+
+HTML_PATH = os.path.join(APP_DIR, 'ItemChecker.html')
+WEB_PORT = 8765
 
 HEADERS = ['Item Name', 'SKU', 'Physical Stock QTY', 'Committed Stock', 'Active']
 STATUSES = ['OVER-COMMITTED', 'NO STOCK', 'LOW', 'OK']
@@ -202,6 +212,107 @@ def split_sql(sql):
     return [p for p in parts if p.strip().strip(';').strip()]
 
 
+# ---------------------------------------------------------------- Browser sync
+# The HTML version keeps the whole database in memory (sql.js). When it is opened
+# through this server it downloads items.db on load and uploads it after each change.
+
+def db_stamp(path):
+    st = os.stat(path)
+    return f'{st.st_mtime_ns}-{st.st_size}'
+
+
+class WebHandler(BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+    def send(self, code, body=b'', ctype='application/json', headers=None):
+        if isinstance(body, str):
+            body = body.encode('utf-8')
+        self.send_response(code)
+        self.send_header('Content-Type', ctype)
+        self.send_header('Content-Length', str(len(body)))
+        self.send_header('Cache-Control', 'no-store')
+        for k, v in (headers or {}).items():
+            self.send_header(k, v)
+        self.end_headers()
+        self.wfile.write(body)
+
+    def host_ok(self):
+        # Reject requests addressed to any other host name (DNS rebinding).
+        port = self.server.server_address[1]
+        return self.headers.get('Host', '') in (f'127.0.0.1:{port}', f'localhost:{port}')
+
+    def do_GET(self):
+        if not self.host_ok():
+            return self.send(403, 'Forbidden', 'text/plain')
+        path = self.path.split('?')[0]
+        db_path = self.server.db_path
+        try:
+            if path in ('/', '/index.html', '/ItemChecker.html'):
+                with open(HTML_PATH, 'rb') as f:
+                    return self.send(200, f.read(), 'text/html; charset=utf-8')
+            if path == '/api/stamp':
+                return self.send(200, json.dumps({'stamp': db_stamp(db_path)}))
+            if path == '/api/db':
+                with self.server.lock:
+                    stamp = db_stamp(db_path)
+                    conn = sqlite3.connect(db_path, timeout=10)
+                    try:
+                        data = conn.serialize()
+                    finally:
+                        conn.close()
+                return self.send(200, data, 'application/x-sqlite3', {'X-Stamp': stamp})
+        except FileNotFoundError:
+            pass
+        except sqlite3.Error as ex:
+            return self.send(500, str(ex), 'text/plain')
+        self.send(404, 'Not found', 'text/plain')
+
+    def do_PUT(self):
+        if not self.host_ok():
+            return self.send(403, 'Forbidden', 'text/plain')
+        if self.path.split('?')[0] != '/api/db':
+            return self.send(404, 'Not found', 'text/plain')
+        data = self.rfile.read(int(self.headers.get('Content-Length') or 0))
+        mem = sqlite3.connect(':memory:')
+        try:
+            try:
+                mem.deserialize(data)
+                if not mem.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='items'").fetchone():
+                    return self.send(400, 'Upload does not contain an items table.', 'text/plain')
+            except sqlite3.DatabaseError as ex:
+                return self.send(400, f'Not a valid database ({ex}).', 'text/plain')
+            with self.server.lock:
+                dst = sqlite3.connect(self.server.db_path, timeout=10)
+                try:
+                    mem.backup(dst)
+                finally:
+                    dst.close()
+                stamp = db_stamp(self.server.db_path)
+        except sqlite3.Error as ex:
+            return self.send(500, str(ex), 'text/plain')
+        finally:
+            mem.close()
+        self.send(200, json.dumps({'stamp': stamp}))
+
+
+def start_web_server(db_path):
+    """Serve on WEB_PORT, or any free port if it is taken (e.g. a second copy of the app)."""
+    for port in (WEB_PORT, 0):
+        try:
+            srv = ThreadingHTTPServer(('127.0.0.1', port), WebHandler)
+            break
+        except OSError:
+            continue
+    else:
+        return None
+    srv.daemon_threads = True
+    srv.db_path = db_path
+    srv.lock = threading.Lock()
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
 # ---------------------------------------------------------------- Data layer
 
 class Store:
@@ -227,6 +338,10 @@ class Store:
     @sample_flag.setter
     def sample_flag(self, on):
         self.conn.execute(f'PRAGMA user_version = {1 if on else 0}')
+
+    def data_version(self):
+        """Changes whenever another connection (e.g. the browser via the web server) commits."""
+        return self.conn.execute('PRAGMA data_version').fetchone()[0]
 
     def close(self):
         self.conn.close()
@@ -595,6 +710,29 @@ class App(tk.Tk):
         self.refresh()
         self.set_status(f'Database: {self.store.path}')
         self.protocol('WM_DELETE_WINDOW', self.on_close)
+        self.web = start_web_server(self.store.path)
+        self.seen_version = self.store.data_version()
+        self.after(1500, self.watch_db)
+
+    def open_in_browser(self):
+        if not self.web:
+            messagebox.showerror('Item Checker', 'The browser version could not be started (no free port).', parent=self)
+        elif not os.path.exists(HTML_PATH):
+            messagebox.showerror('Item Checker', f'ItemChecker.html was not found next to the app:\n{HTML_PATH}', parent=self)
+        else:
+            webbrowser.open(f'http://127.0.0.1:{self.web.server_address[1]}/')
+
+    def watch_db(self):
+        """Pick up changes saved from the browser version."""
+        try:
+            v = self.store.data_version()
+            if v != self.seen_version:
+                self.seen_version = v
+                self.refresh()
+                self.set_status('Updated from the browser')
+        except sqlite3.Error:
+            pass
+        self.after(1500, self.watch_db)
 
     # ---------- setup ----------
     def setup_style(self):
@@ -618,6 +756,7 @@ class App(tk.Tk):
         f.add_command(label='Export to CSV (.csv)…', command=lambda: self.do_export('csv'))
         f.add_command(label='SQLite backup (.db)…', command=lambda: self.do_export('db'))
         f.add_separator()
+        f.add_command(label='Open in browser', command=self.open_in_browser)
         f.add_command(label='Open data folder', command=lambda: os.startfile(os.path.dirname(os.path.abspath(self.store.path))))
         f.add_separator()
         f.add_command(label='Exit', command=self.on_close)
@@ -650,6 +789,7 @@ class App(tk.Tk):
         exp['menu'] = em
         exp.pack(side='right', padx=(6, 0))
         ttk.Button(h, text='Import', command=self.do_import).pack(side='right')
+        ttk.Button(h, text='Open in Browser', command=self.open_in_browser).pack(side='right', padx=(0, 6))
 
     def build_banner(self):
         self.banner = tk.Frame(self, bg='#fffbeb', highlightbackground='#fcd34d', highlightthickness=1, padx=12, pady=8)
@@ -1043,6 +1183,9 @@ class App(tk.Tk):
             self.set_status(f'Saved {path}')
 
     def on_close(self):
+        if self.web:
+            self.web.shutdown()
+            self.web.server_close()
         self.store.close()
         self.destroy()
 

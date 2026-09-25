@@ -33,6 +33,7 @@
       <h1 class="text-xl font-bold leading-tight">Item Checker</h1>
       <p class="text-xs text-teal-100">Physical vs Committed stock · SQLite</p>
     </div>
+    <span id="syncPill" class="hidden rounded-full px-3 py-1 text-xs font-medium"></span>
     <nav class="flex rounded-lg bg-teal-800/60 p-1 text-sm">
       <button data-tab="items" class="tab-btn rounded-md px-3 py-1.5 font-medium">Items</button>
       <button data-tab="sql" class="tab-btn rounded-md px-3 py-1.5 font-medium">SQL Console</button>
@@ -227,7 +228,10 @@
 // ---------- Config ----------
 const SQLJS_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/';
 const LS_DB = 'itemchecker.db.v1';
-const LS_SAMPLE = 'itemchecker.sample';
+const LS_SAMPLE = 'itemchecker.sample'; // legacy; the sample flag now lives in PRAGMA user_version
+// Opened through the desktop app ("Open in Browser") → read and save the same items.db.
+// Opened as a plain file → data stays in this browser only.
+const SERVER = /^https?:$/.test(location.protocol) && /^(127\.0\.0\.1|localhost)$/.test(location.hostname);
 const HEADERS = ['Item Name', 'SKU', 'Physical Stock QTY', 'Committed Stock', 'Active'];
 
 const SCHEMA = `
@@ -290,6 +294,7 @@ LIMIT 20;`],
 ];
 
 let SQL, db;
+const sync = { stamp: null, pending: 0, queue: Promise.resolve(), online: true };
 const state = { search: '', active: 'all', status: 'all', sortCol: 'item_name', sortDir: 'asc' };
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => document.querySelectorAll(s);
@@ -346,15 +351,79 @@ function query(sql, params = []) {
 function exec(sql, params = []) { db.run(sql, params); }
 
 function persist() {
+  if (SERVER) return saveToServer(db.export());
   const ok = lsSet(LS_DB, bytesToB64(db.export()));
   if (!ok) toast('Could not save in the browser (storage full or blocked). Export a .db backup now.', 'error');
 }
+
+// PRAGMA user_version = 1 marks "sample data still loaded" (same flag the desktop app uses).
+function sampleFlag() { return db.exec('PRAGMA user_version')[0].values[0][0] === 1; }
+function setSampleFlag(on) { db.run(`PRAGMA user_version = ${on ? 1 : 0}`); }
 
 function seedSample() {
   for (const r of SAMPLE_ITEMS) {
     exec('INSERT INTO items (item_name, sku, physical_stock, committed_stock, active) VALUES (?,?,?,?,?)', r);
   }
-  lsSet(LS_SAMPLE, '1');
+  setSampleFlag(true);
+}
+
+// ---------- Sync with items.db (desktop app) ----------
+function setSyncPill(kind) {
+  const pill = $('#syncPill');
+  const look = {
+    synced: ['bg-emerald-100 text-emerald-800', 'Synced · items.db', 'Saving to the same items.db as the desktop app.'],
+    offline: ['bg-red-100 text-red-800', 'Not saving: desktop app closed', 'Open the Item Checker desktop app, then reload this page. Changes made now will be lost.'],
+    local: ['bg-amber-100 text-amber-900', 'Browser only', 'This copy saves in this browser only. To share data with the desktop app, open it from the app with "Open in Browser".'],
+  }[kind];
+  pill.className = `rounded-full px-3 py-1 text-xs font-medium ${look[0]}`;
+  pill.textContent = look[1];
+  pill.title = look[2];
+}
+function setOnline(on) {
+  if (sync.online === on) return;
+  sync.online = on;
+  setSyncPill(on ? 'synced' : 'offline');
+  if (!on) toast('Lost connection to the desktop app. Changes are not being saved.', 'error');
+}
+async function fetchServerDb() {
+  const r = await fetch('/api/db', { cache: 'no-store' });
+  if (!r.ok) throw new Error(await r.text());
+  return { bytes: new Uint8Array(await r.arrayBuffer()), stamp: r.headers.get('X-Stamp') };
+}
+function saveToServer(bytes) {
+  sync.pending++;
+  sync.queue = sync.queue.then(async () => {
+    try {
+      const r = await fetch('/api/db', { method: 'PUT', body: bytes, headers: { 'Content-Type': 'application/x-sqlite3' } });
+      if (!r.ok) throw new Error(await r.text());
+      sync.stamp = (await r.json()).stamp;
+      setOnline(true);
+    } catch (ex) {
+      setOnline(false);
+    } finally {
+      sync.pending--;
+    }
+  });
+}
+// Reload when the desktop app changed items.db (skipped while a save is in flight).
+async function pullIfChanged() {
+  if (!db || sync.pending) return;
+  try {
+    const r = await fetch('/api/stamp', { cache: 'no-store' });
+    if (!r.ok) throw new Error();
+    const { stamp } = await r.json();
+    setOnline(true);
+    if (stamp === sync.stamp || sync.pending) return;
+    const got = await fetchServerDb();
+    if (sync.pending) return;
+    const nd = new SQL.Database(got.bytes);
+    db.close();
+    db = nd;
+    sync.stamp = got.stamp;
+    render();
+  } catch {
+    setOnline(false);
+  }
 }
 
 function findSku(sku, exceptId = null) {
@@ -441,7 +510,7 @@ function render() {
   });
 
   const banner = $('#sampleBanner');
-  const showBanner = lsGet(LS_SAMPLE) === '1';
+  const showBanner = sampleFlag();
   banner.classList.toggle('hidden', !showBanner);
   banner.classList.toggle('flex', showBanner);
 }
@@ -596,12 +665,12 @@ $('#btnClearSample').addEventListener('click', () => {
   confirmBox('Clear sample data?', 'All items currently in the list will be removed so you can start fresh.', 'Clear', () => {
     exec('DELETE FROM items');
     exec("DELETE FROM sqlite_sequence WHERE name = 'items'");
-    lsDel(LS_SAMPLE);
+    setSampleFlag(false);
     persist(); render();
     toast('Sample data cleared');
   });
 });
-$('#btnKeepSample').addEventListener('click', () => { lsDel(LS_SAMPLE); render(); });
+$('#btnKeepSample').addEventListener('click', () => { setSampleFlag(false); persist(); render(); });
 
 // ---------- Tabs ----------
 function showTab(name) {
@@ -758,7 +827,7 @@ function restoreDb(buf) {
   }
   db.close();
   db = nd;
-  lsDel(LS_SAMPLE);
+  setSampleFlag(false);
   persist();
   return query('SELECT COUNT(*) AS n FROM items')[0].n;
 }
@@ -915,16 +984,35 @@ async function init() {
     $('#loading').querySelector('.animate-spin').remove();
     return;
   }
-  const saved = lsGet(LS_DB);
-  if (saved) {
-    try { db = new SQL.Database(b64ToBytes(saved)); db.exec(SCHEMA); }
-    catch { db = null; toast('Saved data could not be read. Starting with a new database.', 'error'); }
-  }
-  if (!db) {
-    db = new SQL.Database();
-    db.exec(SCHEMA);
-    seedSample();
-    persist();
+  if (SERVER) {
+    try {
+      const got = await fetchServerDb();
+      db = new SQL.Database(got.bytes);
+      sync.stamp = got.stamp;
+    } catch (ex) {
+      $('#loadingText').innerHTML = `<b class="text-red-600">Could not read items.db from the desktop app.</b><br>Make sure Item Checker is open, then reload this page.<br><span class="text-xs">${esc(ex.message)}</span>`;
+      $('#loading').querySelector('.animate-spin').remove();
+      return;
+    }
+    setSyncPill('synced');
+    setInterval(pullIfChanged, 2000);
+    window.addEventListener('focus', pullIfChanged);
+  } else {
+    const saved = lsGet(LS_DB);
+    if (saved) {
+      try {
+        db = new SQL.Database(b64ToBytes(saved));
+        db.exec(SCHEMA);
+        if (lsGet(LS_SAMPLE) === '1') { setSampleFlag(true); lsDel(LS_SAMPLE); persist(); }
+      } catch { db = null; toast('Saved data could not be read. Starting with a new database.', 'error'); }
+    }
+    if (!db) {
+      db = new SQL.Database();
+      db.exec(SCHEMA);
+      seedSample();
+      persist();
+    }
+    setSyncPill('local');
   }
   $('#loading').remove();
   showTab('items');
