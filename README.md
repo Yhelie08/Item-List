@@ -16,7 +16,8 @@ Rules are checked in order:
 ## Files
 
 - `ItemChecker.pyw`: the desktop app (Python + Tkinter)
-- `ItemChecker.html`: browser version of the checker
+- `ItemChecker.html`: web version of the checker (`index.html` redirects to it)
+- `supabase_setup.sql`: tables and access rules for the shared online list
 - `schema.sql`: SQLite schema (table, `updated_at` trigger, `v_item_check` view)
 - `Item_Checker_Project_Plan.pdf`: project plan
 
@@ -31,10 +32,24 @@ pythonw ItemChecker.pyw
 
 The app creates `items.db` next to the script on first run. To use a different location, set the `ITEMCHECKER_DB` environment variable. The database is not tracked in git.
 
-## Desktop and browser share the same data
+## Shared online list (Supabase)
 
-Click **Open in Browser** in the desktop app (or **File → Open in browser**). This opens the HTML version at `http://127.0.0.1:8765/`, and it reads and saves the same `items.db`:
+When `SUPABASE_URL` and `SUPABASE_ANON_KEY` are filled in, at the top of `ItemChecker.pyw` and in the `<script>` of `ItemChecker.html`, everyone works on **one shared list**:
 
-- Changes made in the browser show up in the desktop app within about 2 seconds, and the reverse also works.
-- The pill in the browser header shows **Synced · items.db**. If the desktop app is closed, it turns red and changes are **not** saved.
-- If you open `ItemChecker.html` directly (double-click), it shows **Browser only**. That copy keeps its data in the browser and does not touch `items.db`. To move that data over, use **Export → SQLite backup (.db)** there, then **Import** the file in the desktop app.
+- **Web:** https://yhelie08.github.io/Item-List/ (GitHub Pages). Share this link.
+- **Desktop:** `ItemChecker.pyw` uses the same online list. It keeps a local copy in `items_online_cache.db` and never overwrites `items.db`.
+- Everyone signs in with an email and password. Changes by one person show up for the others within about 5 seconds.
+- If the online list is empty, the desktop app offers to upload the items from `items.db`.
+
+### One-time setup
+
+1. Create a free project at https://supabase.com.
+2. In **SQL Editor**, paste all of `supabase_setup.sql` and click **Run**.
+3. In **Authentication → Sign In / Providers**, turn off **Allow new users to sign up** so only people you add can get in.
+4. In **Authentication → Users → Add user → Create new user**, add each person with an email and password. Tick **Auto Confirm User**.
+5. In **Project Settings → API**, copy the **Project URL** and the **anon public** key into both files.
+6. In the GitHub repo, go to **Settings → Pages**, set the source to **Deploy from a branch → main → / (root)**, and save.
+
+The anon key is meant to be public. The row-level security rules in `supabase_setup.sql` only let signed-in users read or change items.
+
+Without these settings, both apps work on their own like before: the desktop uses `items.db`, and the web page saves in the browser.

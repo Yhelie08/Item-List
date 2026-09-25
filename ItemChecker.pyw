@@ -4,8 +4,9 @@ Stores the item list in a SQLite database (items.db, next to this file),
 compares Physical Stock against Committed Stock, and flags items that need attention.
 Import/export: CSV, Excel (.xlsx), and SQLite (.db) backup/restore.
 
-While the app is open it also serves ItemChecker.html at http://127.0.0.1:8765/
-so the browser version reads and saves the same items.db.
+Shared mode: when SUPABASE_URL and SUPABASE_ANON_KEY are set, the item list lives in
+Supabase and items.db is only a local copy. Every change is sent to Supabase, and
+changes made by other people (desktop or web) are picked up within a few seconds.
 """
 import csv
 import datetime
@@ -15,9 +16,11 @@ import re
 import sqlite3
 import sys
 import threading
+import time
 import tkinter as tk
+import urllib.error
+import urllib.request
 import webbrowser
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from tkinter import filedialog, messagebox, ttk
 
 try:
@@ -32,8 +35,14 @@ else:
     APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.environ.get('ITEMCHECKER_DB') or os.path.join(APP_DIR, 'items.db')
 
-HTML_PATH = os.path.join(APP_DIR, 'ItemChecker.html')
-WEB_PORT = 8765
+# Shared online database (Supabase → Project Settings → API). Leave empty to keep the data on this PC only.
+SUPABASE_URL = ''
+SUPABASE_ANON_KEY = ''
+# The web version everyone opens (GitHub Pages). Used by the "Open in Browser" button.
+WEB_URL = 'https://yhelie08.github.io/Item-List/'
+# Shared mode keeps its local copy here, so the original items.db is never overwritten.
+CACHE_PATH = os.environ.get('ITEMCHECKER_CACHE') or os.path.join(APP_DIR, 'items_online_cache.db')
+SESSION_PATH = os.path.join(os.environ.get('APPDATA') or os.path.expanduser('~'), 'ItemChecker', 'session.json')
 
 HEADERS = ['Item Name', 'SKU', 'Physical Stock QTY', 'Committed Stock', 'Active']
 STATUSES = ['OVER-COMMITTED', 'NO STOCK', 'LOW', 'OK']
@@ -212,117 +221,145 @@ def split_sql(sql):
     return [p for p in parts if p.strip().strip(';').strip()]
 
 
-# ---------------------------------------------------------------- Browser sync
-# The HTML version keeps the whole database in memory (sql.js). When it is opened
-# through this server it downloads items.db on load and uploads it after each change.
+# ---------------------------------------------------------------- Supabase
 
-def db_stamp(path):
-    st = os.stat(path)
-    return f'{st.st_mtime_ns}-{st.st_size}'
+FIELDS = ('item_name', 'sku', 'physical_stock', 'committed_stock', 'active')
 
 
-class WebHandler(BaseHTTPRequestHandler):
-    def log_message(self, *args):
-        pass
+class CloudError(Exception):
+    def __init__(self, msg, status=None):
+        super().__init__(msg)
+        self.status = status
 
-    def send(self, code, body=b'', ctype='application/json', headers=None):
-        if isinstance(body, str):
-            body = body.encode('utf-8')
-        self.send_response(code)
-        self.send_header('Content-Type', ctype)
-        self.send_header('Content-Length', str(len(body)))
-        self.send_header('Cache-Control', 'no-store')
-        for k, v in (headers or {}).items():
-            self.send_header(k, v)
-        self.end_headers()
-        self.wfile.write(body)
 
-    def host_ok(self):
-        # Reject requests addressed to any other host name (DNS rebinding).
-        port = self.server.server_address[1]
-        return self.headers.get('Host', '') in (f'127.0.0.1:{port}', f'localhost:{port}')
+def local_time(iso):
+    """Supabase timestamp → 'YYYY-MM-DD HH:MM:SS' in local time, like the SQLite defaults."""
+    try:
+        return datetime.datetime.fromisoformat(iso).astimezone().strftime('%Y-%m-%d %H:%M:%S')
+    except (TypeError, ValueError):
+        return iso
 
-    def do_GET(self):
-        if not self.host_ok():
-            return self.send(403, 'Forbidden', 'text/plain')
-        path = self.path.split('?')[0]
-        db_path = self.server.db_path
+
+class Cloud:
+    """Minimal Supabase client: password sign-in, and the items / sync_state tables over REST."""
+    PAGE = 1000  # Supabase returns at most 1000 rows per request
+
+    def __init__(self, url, key, session_path):
+        self.url, self.key, self.session_path = url.rstrip('/'), key, session_path
+        self.session = None
+        self.lock = threading.Lock()  # the poller thread and the UI share the token
+
+    @property
+    def email(self):
+        return self.session['email'] if self.session else ''
+
+    def _http(self, method, path, body=None, headers=None, token=None):
+        h = {'apikey': self.key, 'Authorization': f'Bearer {token or self.key}', 'Content-Type': 'application/json'}
+        h.update(headers or {})
+        data = json.dumps(body).encode('utf-8') if body is not None else None
+        req = urllib.request.Request(self.url + path, data=data, method=method, headers=h)
         try:
-            if path in ('/', '/index.html', '/ItemChecker.html'):
-                with open(HTML_PATH, 'rb') as f:
-                    return self.send(200, f.read(), 'text/html; charset=utf-8')
-            if path == '/api/stamp':
-                return self.send(200, json.dumps({'stamp': db_stamp(db_path)}))
-            if path == '/api/db':
-                with self.server.lock:
-                    stamp = db_stamp(db_path)
-                    conn = sqlite3.connect(db_path, timeout=10)
-                    try:
-                        data = conn.serialize()
-                    finally:
-                        conn.close()
-                return self.send(200, data, 'application/x-sqlite3', {'X-Stamp': stamp})
-        except FileNotFoundError:
-            pass
-        except sqlite3.Error as ex:
-            return self.send(500, str(ex), 'text/plain')
-        self.send(404, 'Not found', 'text/plain')
-
-    def do_PUT(self):
-        if not self.host_ok():
-            return self.send(403, 'Forbidden', 'text/plain')
-        if self.path.split('?')[0] != '/api/db':
-            return self.send(404, 'Not found', 'text/plain')
-        data = self.rfile.read(int(self.headers.get('Content-Length') or 0))
-        mem = sqlite3.connect(':memory:')
-        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                raw = r.read()
+            return json.loads(raw) if raw else None
+        except urllib.error.HTTPError as ex:
+            msg = ex.read().decode('utf-8', 'replace')
             try:
-                mem.deserialize(data)
-                if not mem.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='items'").fetchone():
-                    return self.send(400, 'Upload does not contain an items table.', 'text/plain')
-            except sqlite3.DatabaseError as ex:
-                return self.send(400, f'Not a valid database ({ex}).', 'text/plain')
-            with self.server.lock:
-                dst = sqlite3.connect(self.server.db_path, timeout=10)
-                try:
-                    mem.backup(dst)
-                finally:
-                    dst.close()
-                stamp = db_stamp(self.server.db_path)
-        except sqlite3.Error as ex:
-            return self.send(500, str(ex), 'text/plain')
-        finally:
-            mem.close()
-        self.send(200, json.dumps({'stamp': stamp}))
+                j = json.loads(msg)
+                msg = j.get('message') or j.get('msg') or j.get('error_description') or msg
+            except ValueError:
+                pass
+            raise CloudError(msg, ex.code)
+        except (urllib.error.URLError, TimeoutError, OSError) as ex:
+            raise CloudError(f'Cannot reach the online database ({getattr(ex, "reason", ex)}). Check the internet connection.')
 
-
-def start_web_server(db_path):
-    """Serve on WEB_PORT, or any free port if it is taken (e.g. a second copy of the app)."""
-    for port in (WEB_PORT, 0):
+    def _auth(self, grant, body):
+        s = self._http('POST', f'/auth/v1/token?grant_type={grant}', body)
+        self.session = {'access_token': s['access_token'], 'refresh_token': s['refresh_token'],
+                        'email': (s.get('user') or {}).get('email', ''),
+                        'expires_at': time.time() + int(s.get('expires_in', 3600)) - 60}
         try:
-            srv = ThreadingHTTPServer(('127.0.0.1', port), WebHandler)
-            break
+            os.makedirs(os.path.dirname(self.session_path), exist_ok=True)
+            with open(self.session_path, 'w', encoding='utf-8') as f:
+                json.dump({'refresh_token': s['refresh_token'], 'email': self.session['email']}, f)
         except OSError:
-            continue
-    else:
-        return None
-    srv.daemon_threads = True
-    srv.db_path = db_path
-    srv.lock = threading.Lock()
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
-    return srv
+            pass
+
+    def sign_in(self, email, password):
+        try:
+            self._auth('password', {'email': email.strip(), 'password': password})
+        except CloudError as ex:
+            if ex.status in (400, 401):
+                raise CloudError('Wrong email or password.', ex.status)
+            raise
+
+    def resume(self):
+        """Sign in again with the saved session. Returns False if the user has to log in."""
+        try:
+            with open(self.session_path, encoding='utf-8') as f:
+                token = json.load(f)['refresh_token']
+            self._auth('refresh_token', {'refresh_token': token})
+            return True
+        except (OSError, ValueError, KeyError, CloudError):
+            return False
+
+    def sign_out(self):
+        if self.session:
+            try:
+                self._http('POST', '/auth/v1/logout', {}, token=self.session['access_token'])
+            except CloudError:
+                pass
+        self.session = None
+        try:
+            os.remove(self.session_path)
+        except OSError:
+            pass
+
+    def api(self, method, path, body=None, headers=None):
+        with self.lock:
+            if time.time() > self.session['expires_at']:
+                self._auth('refresh_token', {'refresh_token': self.session['refresh_token']})
+            token = self.session['access_token']
+        return self._http(method, '/rest/v1/' + path, body, headers, token)
+
+    def fetch_items(self):
+        rows, offset = [], 0
+        while True:
+            page = self.api('GET', f'items?select=id,{",".join(FIELDS)},created_at,updated_at'
+                                   f'&order=id&limit={self.PAGE}&offset={offset}')
+            rows += page
+            if len(page) < self.PAGE:
+                return rows
+            offset += self.PAGE
+
+    def version(self):
+        """Counter bumped by a trigger on every change to items."""
+        r = self.api('GET', 'sync_state?select=version&id=eq.1')
+        if not r:
+            raise CloudError('The sync_state table is empty. Run supabase_setup.sql in the Supabase SQL Editor.')
+        return r[0]['version']
+
+    def push(self, deletes, updates, inserts):
+        for i in range(0, len(deletes), 200):
+            self.api('DELETE', f'items?id=in.({",".join(map(str, deletes[i:i + 200]))})')
+        for i in range(0, len(updates), 500):
+            self.api('POST', 'items?on_conflict=id', updates[i:i + 500],
+                     {'Prefer': 'resolution=merge-duplicates,return=minimal'})
+        for i in range(0, len(inserts), 500):
+            self.api('POST', 'items', inserts[i:i + 500], {'Prefer': 'return=minimal'})
 
 
 # ---------------------------------------------------------------- Data layer
 
 class Store:
-    def __init__(self, path):
+    def __init__(self, path, seed=True):
         self.path = path
+        self.snapshot = {}  # shared mode: id -> FIELDS as last loaded from Supabase
         is_new = not os.path.exists(path)
         self.conn = sqlite3.connect(path, isolation_level=None)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
-        if is_new:
+        if is_new and seed:
             self.conn.execute('BEGIN')
             self.conn.executemany(
                 'INSERT INTO items (item_name, sku, physical_stock, committed_stock, active) VALUES (?,?,?,?,?)',
@@ -339,12 +376,39 @@ class Store:
     def sample_flag(self, on):
         self.conn.execute(f'PRAGMA user_version = {1 if on else 0}')
 
-    def data_version(self):
-        """Changes whenever another connection (e.g. the browser via the web server) commits."""
-        return self.conn.execute('PRAGMA data_version').fetchone()[0]
-
     def close(self):
         self.conn.close()
+
+    # ---------- shared mode ----------
+    def load_remote(self, rows):
+        """Replace the local copy with the rows from Supabase."""
+        self.conn.execute('BEGIN')
+        try:
+            self.conn.execute('DELETE FROM items')
+            self.conn.executemany(
+                'INSERT INTO items (id, item_name, sku, physical_stock, committed_stock, active, created_at, updated_at) '
+                'VALUES (?,?,?,?,?,?,?,?)',
+                [(r['id'], *(r[f] for f in FIELDS), local_time(r['created_at']), local_time(r['updated_at'])) for r in rows])
+            self.conn.execute('COMMIT')
+        except Exception:
+            self.conn.execute('ROLLBACK')
+            raise
+        self.sample_flag = False
+        self.snapshot = {r['id']: tuple(r[f] for f in FIELDS) for r in rows}
+
+    def changes(self):
+        """What changed locally since load_remote(): (deleted ids, updated rows, new rows)."""
+        updates, inserts, seen = [], [], set()
+        for r in self.conn.execute(f'SELECT id, {", ".join(FIELDS)} FROM items'):
+            row = {f: r[f] for f in FIELDS}
+            old = self.snapshot.get(r['id'])
+            if old is None:
+                inserts.append(row)
+            else:
+                seen.add(r['id'])
+                if old != tuple(row.values()):
+                    updates.append({'id': r['id'], **row})
+        return [i for i in self.snapshot if i not in seen], updates, inserts
 
     def list_items(self, search='', active='all', status='all', sort_col='item_name', sort_dir='asc'):
         where, params = [], []
@@ -660,8 +724,64 @@ class ItemDialog(tk.Toplevel):
             return
         sku = self.v_sku.get().strip()
         self.destroy()
-        self.app.refresh()
+        self.app.saved()
         self.app.set_status(f'{"Updated" if self.item else "Added"} {sku}')
+
+
+class LoginDialog(tk.Toplevel):
+    """Sign in to the shared online list. self.ok is True after a successful sign-in."""
+
+    def __init__(self, app):
+        super().__init__(app)
+        self.app, self.ok = app, False
+        self.title('Sign in - Item Checker')
+        self.configure(bg=CARD, padx=18, pady=14)
+        self.resizable(False, False)
+        self.transient(app)
+        tk.Label(self, text='Sign in to the shared item list', bg=CARD, font=('Segoe UI Semibold', 12)).grid(
+            row=0, column=0, sticky='w')
+        self.v_email = tk.StringVar(value=self.app.cloud.email)
+        self.v_pw = tk.StringVar()
+        tk.Label(self, text='Email', bg=CARD, font=('Segoe UI Semibold', 10)).grid(row=1, column=0, sticky='w', pady=(10, 2))
+        e_email = ttk.Entry(self, textvariable=self.v_email, width=40, font=FONT)
+        e_email.grid(row=2, column=0, sticky='we')
+        tk.Label(self, text='Password', bg=CARD, font=('Segoe UI Semibold', 10)).grid(row=3, column=0, sticky='w', pady=(6, 2))
+        e_pw = ttk.Entry(self, textvariable=self.v_pw, width=40, font=FONT, show='•')
+        e_pw.grid(row=4, column=0, sticky='we')
+        self.error = tk.Label(self, bg='#fef2f2', fg='#b91c1c', font=FONT, anchor='w', justify='left', wraplength=340)
+        btns = tk.Frame(self, bg=CARD)
+        btns.grid(row=6, column=0, sticky='e', pady=(14, 0))
+        ttk.Button(btns, text='Cancel', command=self.destroy).pack(side='right')
+        self.b_ok = ttk.Button(btns, text='Sign in', style='Accent.TButton', command=self.submit)
+        self.b_ok.pack(side='right', padx=(0, 6))
+        self.bind('<Return>', lambda e: self.submit())
+        self.bind('<Escape>', lambda e: self.destroy())
+        self.update_idletasks()
+        x = app.winfo_rootx() + (app.winfo_width() - self.winfo_width()) // 2
+        y = app.winfo_rooty() + (app.winfo_height() - self.winfo_height()) // 3
+        self.geometry(f'+{max(x, 0)}+{max(y, 0)}')
+        self.grab_set()
+        (e_pw if self.v_email.get() else e_email).focus_set()
+
+    def submit(self):
+        email, pw = self.v_email.get().strip(), self.v_pw.get()
+        if not email or not pw:
+            return self.show_error('Enter your email and password.')
+        self.b_ok.state(['disabled'])
+        self.config(cursor='watch')
+        self.update_idletasks()
+        try:
+            self.app.cloud.sign_in(email, pw)
+        except CloudError as ex:
+            self.b_ok.state(['!disabled'])
+            self.config(cursor='')
+            return self.show_error(str(ex))
+        self.ok = True
+        self.destroy()
+
+    def show_error(self, msg):
+        self.error.config(text=msg, padx=8, pady=6)
+        self.error.grid(row=5, column=0, sticky='we', pady=(8, 0))
 
 
 class TextDialog(tk.Toplevel):
@@ -696,7 +816,10 @@ class App(tk.Tk):
         self.geometry('1180x720')
         self.minsize(900, 560)
         self.configure(bg=BG)
-        self.store = Store(db_path)
+        self.cloud = Cloud(SUPABASE_URL, SUPABASE_ANON_KEY, SESSION_PATH) if SUPABASE_URL and SUPABASE_ANON_KEY else None
+        self.store = Store(CACHE_PATH if self.cloud else db_path, seed=self.cloud is None)
+        self.remote_version = self.polled_version = None
+        self.closing = False
         self.sort_col, self.sort_dir = 'item_name', 'asc'
         self.last_result = None
 
@@ -710,29 +833,101 @@ class App(tk.Tk):
         self.refresh()
         self.set_status(f'Database: {self.store.path}')
         self.protocol('WM_DELETE_WINDOW', self.on_close)
-        self.web = start_web_server(self.store.path)
-        self.seen_version = self.store.data_version()
-        self.after(1500, self.watch_db)
+        if self.cloud:
+            self.after(50, self.start_cloud)
 
-    def open_in_browser(self):
-        if not self.web:
-            messagebox.showerror('Item Checker', 'The browser version could not be started (no free port).', parent=self)
-        elif not os.path.exists(HTML_PATH):
-            messagebox.showerror('Item Checker', f'ItemChecker.html was not found next to the app:\n{HTML_PATH}', parent=self)
-        else:
-            webbrowser.open(f'http://127.0.0.1:{self.web.server_address[1]}/')
-
-    def watch_db(self):
-        """Pick up changes saved from the browser version."""
+    # ---------- shared mode ----------
+    def start_cloud(self):
+        self.set_status('Connecting to the online database…')
+        self.update_idletasks()
+        if not self.cloud.resume():
+            dlg = LoginDialog(self)
+            self.wait_window(dlg)
+            if not dlg.ok:
+                return self.on_close()
         try:
-            v = self.store.data_version()
-            if v != self.seen_version:
-                self.seen_version = v
-                self.refresh()
-                self.set_status('Updated from the browser')
+            self.pull()
+        except CloudError as ex:
+            messagebox.showerror('Item Checker', f'Could not load the online item list.\n\n{ex}\n\n'
+                                 'Showing the copy saved on this PC. Changes will be sent once the connection is back.',
+                                 parent=self)
+        else:
+            self.offer_upload()
+        threading.Thread(target=self.poll_loop, daemon=True).start()
+        self.after(1000, self.check_remote)
+
+    def offer_upload(self):
+        """First run in shared mode: offer to copy the items from this PC's items.db to the empty online list."""
+        if self.store.totals()['total'] or not os.path.exists(DB_PATH):
+            return
+        try:
+            src = sqlite3.connect(f'file:{DB_PATH}?mode=ro', uri=True)
+            try:
+                n = src.execute('SELECT COUNT(*) FROM items').fetchone()[0]
+            finally:
+                src.close()
         except sqlite3.Error:
-            pass
-        self.after(1500, self.watch_db)
+            return
+        if n and messagebox.askyesno('Upload your items?',
+                                     f'The online item list is empty.\n\nUpload the {n:,} items from this PC '
+                                     f'({os.path.basename(DB_PATH)}) so everyone can see them?', parent=self):
+            self.store.restore_from(DB_PATH)
+            self.saved()
+            messagebox.showinfo('Upload finished', f'{self.store.totals()["total"]:,} items are now online.', parent=self)
+
+    def pull(self):
+        v = self.cloud.version()
+        self.store.load_remote(self.cloud.fetch_items())
+        self.remote_version = v
+        self.refresh()
+        self.set_status(f'Online · signed in as {self.cloud.email} · changes are shared')
+
+    def saved(self):
+        """Call after any change to the item list. In shared mode, sends the changes online first."""
+        if self.cloud and self.cloud.session:
+            self.config(cursor='watch')
+            self.set_status('Saving…')
+            self.update_idletasks()
+            try:
+                self.cloud.push(*self.store.changes())
+            except CloudError as ex:
+                messagebox.showerror('Could not save online',
+                                     f'{ex}\n\nThe list will be reloaded with the latest online data.', parent=self)
+            try:
+                self.pull()
+            except CloudError as ex:
+                self.set_status(f'Offline: {ex}')
+            finally:
+                self.config(cursor='')
+        self.refresh()
+
+    def poll_loop(self):
+        while not self.closing:
+            time.sleep(4)
+            try:
+                self.polled_version = self.cloud.version()
+            except Exception:
+                self.polled_version = None
+
+    def check_remote(self):
+        """Reload when someone else changed the online list."""
+        if self.closing:
+            return
+        v = self.polled_version
+        if v is not None and v != self.remote_version and not self.grab_current():
+            try:
+                self.pull()
+            except CloudError as ex:
+                self.set_status(f'Offline: {ex}')
+        self.after(1000, self.check_remote)
+
+    def open_web(self):
+        webbrowser.open(WEB_URL)
+
+    def sign_out(self):
+        if messagebox.askyesno('Sign out?', 'Sign out of the shared item list? The app will close.', parent=self):
+            self.cloud.sign_out()
+            self.on_close()
 
     # ---------- setup ----------
     def setup_style(self):
@@ -756,7 +951,9 @@ class App(tk.Tk):
         f.add_command(label='Export to CSV (.csv)…', command=lambda: self.do_export('csv'))
         f.add_command(label='SQLite backup (.db)…', command=lambda: self.do_export('db'))
         f.add_separator()
-        f.add_command(label='Open in browser', command=self.open_in_browser)
+        if self.cloud:
+            f.add_command(label='Open web version', command=self.open_web)
+            f.add_command(label='Sign out…', command=self.sign_out)
         f.add_command(label='Open data folder', command=lambda: os.startfile(os.path.dirname(os.path.abspath(self.store.path))))
         f.add_separator()
         f.add_command(label='Exit', command=self.on_close)
@@ -789,7 +986,8 @@ class App(tk.Tk):
         exp['menu'] = em
         exp.pack(side='right', padx=(6, 0))
         ttk.Button(h, text='Import', command=self.do_import).pack(side='right')
-        ttk.Button(h, text='Open in Browser', command=self.open_in_browser).pack(side='right', padx=(0, 6))
+        if self.cloud:
+            ttk.Button(h, text='Open in Browser', command=self.open_web).pack(side='right', padx=(0, 6))
 
     def build_banner(self):
         self.banner = tk.Frame(self, bg='#fffbeb', highlightbackground='#fcd34d', highlightthickness=1, padx=12, pady=8)
@@ -1023,7 +1221,7 @@ class App(tk.Tk):
         item_id = self.selected_id()
         if item_id:
             self.store.toggle_active(item_id)
-            self.refresh()
+            self.saved()
 
     def delete_item(self):
         item_id = self.selected_id()
@@ -1033,7 +1231,7 @@ class App(tk.Tk):
         if r and messagebox.askyesno('Delete item?', f'{r["item_name"]} ({r["sku"]}) will be permanently removed.',
                                      icon='warning', parent=self):
             self.store.delete(item_id)
-            self.refresh()
+            self.saved()
             self.set_status(f'Deleted {r["sku"]}')
 
     def on_right_click(self, e):
@@ -1046,7 +1244,7 @@ class App(tk.Tk):
         if messagebox.askyesno('Clear sample data?', 'All items currently in the list will be removed so you can start fresh.',
                                icon='warning', parent=self):
             self.store.clear_all()
-            self.refresh()
+            self.saved()
             self.set_status('Sample data cleared')
 
     def keep_sample(self):
@@ -1065,8 +1263,9 @@ class App(tk.Tk):
                 if not messagebox.askyesno('Restore backup?', 'Restoring a .db backup REPLACES ALL current items.\n\nContinue?',
                                            icon='warning', parent=self):
                     return
-                n = self.store.restore_from(path)
-                self.refresh()
+                self.store.restore_from(path)
+                self.saved()
+                n = self.store.totals()['total']
                 self.set_status(f'Backup restored from {os.path.basename(path)}')
                 messagebox.showinfo('Backup restored', f'{n:,} items loaded.', parent=self)
                 return
@@ -1074,7 +1273,7 @@ class App(tk.Tk):
         except Exception as ex:
             messagebox.showerror('Import failed', str(ex), parent=self)
             return
-        self.refresh()
+        self.saved()
         summary = f'{added:,} added, {updated:,} updated, {len(skipped):,} skipped.'
         self.set_status(f'Imported {os.path.basename(path)}: {summary}')
         lines = [f'Row {n}{f" ({sku})" if sku else ""}: {why}' for n, sku, why in skipped]
@@ -1154,7 +1353,7 @@ class App(tk.Tk):
         parts.append(f'{ms:.1f} ms')
         self.l_sql.config(text='  ·  '.join(parts))
         if any_change:
-            self.refresh()
+            self.saved()
 
     def show_sql_result(self, cols, rows):
         tv = self.sql_tree
@@ -1183,9 +1382,7 @@ class App(tk.Tk):
             self.set_status(f'Saved {path}')
 
     def on_close(self):
-        if self.web:
-            self.web.shutdown()
-            self.web.server_close()
+        self.closing = True
         self.store.close()
         self.destroy()
 

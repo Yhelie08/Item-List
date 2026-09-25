@@ -7,6 +7,7 @@
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/sql-wasm.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
 <style>
   body { font-family: ui-sans-serif, system-ui, "Segoe UI", Roboto, Arial, sans-serif; }
   .num { font-variant-numeric: tabular-nums; }
@@ -48,6 +49,7 @@
       </div>
     </div>
     <button id="btnAdd" class="rounded-lg bg-white px-3 py-2 text-sm font-semibold text-teal-800 hover:bg-teal-50">+ Add Item</button>
+    <button id="btnSignOut" class="hidden rounded-lg px-3 py-2 text-sm font-medium text-teal-50 hover:bg-white/10">Sign out</button>
   </div>
 </header>
 
@@ -219,6 +221,30 @@
   </div>
 </div>
 
+<!-- Sign-in (shared mode) -->
+<div id="loginView" class="fixed inset-0 z-50 hidden items-center justify-center bg-slate-100 p-4">
+  <form id="loginForm" class="w-full max-w-sm rounded-xl bg-white p-6 shadow-xl ring-1 ring-slate-200" novalidate>
+    <h1 class="text-xl font-bold text-teal-800">Item Checker</h1>
+    <p class="mt-1 text-sm text-slate-500">Sign in to see the shared item list.</p>
+    <label class="mt-4 block text-sm">
+      <span class="font-medium">Email</span>
+      <input name="email" type="email" autocomplete="username" class="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500">
+    </label>
+    <label class="mt-3 block text-sm">
+      <span class="font-medium">Password</span>
+      <input name="password" type="password" autocomplete="current-password" class="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500">
+    </label>
+    <p id="loginError" class="mt-3 hidden rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700"></p>
+    <button type="submit" class="mt-4 w-full rounded-lg bg-teal-700 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-800 disabled:opacity-50">Sign in</button>
+    <p class="mt-3 text-xs text-slate-500">No account? Ask the person who sent you this link to add you.</p>
+  </form>
+</div>
+
+<!-- Blocks input while a change is being saved online -->
+<div id="savingOverlay" class="fixed inset-0 z-[60] hidden cursor-wait">
+  <div class="absolute bottom-4 left-1/2 -translate-x-1/2 rounded-lg bg-slate-800 px-4 py-2 text-sm text-white shadow-lg">Saving…</div>
+</div>
+
 <!-- Toasts -->
 <div id="toasts" class="fixed bottom-4 right-4 z-50 flex flex-col gap-2"></div>
 
@@ -228,10 +254,11 @@
 // ---------- Config ----------
 const SQLJS_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/';
 const LS_DB = 'itemchecker.db.v1';
-const LS_SAMPLE = 'itemchecker.sample'; // legacy; the sample flag now lives in PRAGMA user_version
-// Opened through the desktop app ("Open in Browser") → read and save the same items.db.
-// Opened as a plain file → data stays in this browser only.
-const SERVER = /^https?:$/.test(location.protocol) && /^(127\.0\.0\.1|localhost)$/.test(location.hostname);
+// Shared online database (Supabase → Project Settings → API). Leave empty to keep data in this browser only.
+const SUPABASE_URL = '';
+const SUPABASE_ANON_KEY = '';
+const ONLINE = !!(SUPABASE_URL && SUPABASE_ANON_KEY);
+const LS_SAMPLE = 'itemchecker.sample';
 const HEADERS = ['Item Name', 'SKU', 'Physical Stock QTY', 'Committed Stock', 'Active'];
 
 const SCHEMA = `
@@ -294,7 +321,10 @@ LIMIT 20;`],
 ];
 
 let SQL, db;
-const sync = { stamp: null, pending: 0, queue: Promise.resolve(), online: true };
+let sb = null; // Supabase client (shared mode)
+// snapshot: id -> FIELDS values as last loaded from Supabase; local edits are diffed against it.
+const sync = { snapshot: new Map(), version: null, busy: false, dirty: false, online: true, email: '' };
+const FIELDS = ['item_name', 'sku', 'physical_stock', 'committed_stock', 'active'];
 const state = { search: '', active: 'all', status: 'all', sortCol: 'item_name', sortDir: 'asc' };
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => document.querySelectorAll(s);
@@ -351,30 +381,108 @@ function query(sql, params = []) {
 function exec(sql, params = []) { db.run(sql, params); }
 
 function persist() {
-  if (SERVER) return saveToServer(db.export());
+  if (ONLINE) return saveOnline();
   const ok = lsSet(LS_DB, bytesToB64(db.export()));
   if (!ok) toast('Could not save in the browser (storage full or blocked). Export a .db backup now.', 'error');
 }
 
-// PRAGMA user_version = 1 marks "sample data still loaded" (same flag the desktop app uses).
-function sampleFlag() { return db.exec('PRAGMA user_version')[0].values[0][0] === 1; }
-function setSampleFlag(on) { db.run(`PRAGMA user_version = ${on ? 1 : 0}`); }
-
-function seedSample() {
-  for (const r of SAMPLE_ITEMS) {
-    exec('INSERT INTO items (item_name, sku, physical_stock, committed_stock, active) VALUES (?,?,?,?,?)', r);
-  }
-  setSampleFlag(true);
+// ---------- Shared mode (Supabase) ----------
+// The page works on a local SQLite copy of the online list. After each change the
+// differences are sent to Supabase and the list is reloaded; a change counter
+// (sync_state.version) tells the page when someone else changed something.
+function localTime(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
-
-// ---------- Sync with items.db (desktop app) ----------
+function check({ data, error }) {
+  if (error) throw new Error(error.message);
+  return data;
+}
+async function fetchVersion() {
+  const rows = check(await sb.from('sync_state').select('version').eq('id', 1));
+  if (!rows.length) throw new Error('The sync_state table is empty. Run supabase_setup.sql in Supabase.');
+  return rows[0].version;
+}
+async function fetchItems() {
+  const rows = [];
+  for (let from = 0; ; from += 1000) { // Supabase returns at most 1000 rows per request
+    const page = check(await sb.from('items').select(`id,${FIELDS.join(',')},created_at,updated_at`)
+      .order('id').range(from, from + 999));
+    rows.push(...page);
+    if (page.length < 1000) return rows;
+  }
+}
+function loadRows(rows) {
+  const nd = new SQL.Database();
+  nd.exec(SCHEMA);
+  nd.exec('BEGIN');
+  const st = nd.prepare('INSERT INTO items (id, item_name, sku, physical_stock, committed_stock, active, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)');
+  for (const r of rows) st.run([r.id, ...FIELDS.map((f) => r[f]), localTime(r.created_at), localTime(r.updated_at)]);
+  st.free();
+  nd.exec('COMMIT');
+  if (db) db.close();
+  db = nd;
+  sync.snapshot = new Map(rows.map((r) => [r.id, FIELDS.map((f) => r[f])]));
+}
+async function pull() {
+  const v = await fetchVersion();
+  const rows = await fetchItems();
+  if (sync.dirty) return; // a local edit arrived meanwhile; saveOnline() pushes it, then reloads
+  loadRows(rows);
+  sync.version = v;
+}
+async function pushChanges() {
+  const inserts = [], updates = [], seen = new Set();
+  for (const r of query(`SELECT id, ${FIELDS.join(', ')} FROM items`)) {
+    const row = Object.fromEntries(FIELDS.map((f) => [f, r[f]]));
+    const old = sync.snapshot.get(r.id);
+    if (!old) inserts.push(row);
+    else {
+      seen.add(r.id);
+      if (FIELDS.some((f, i) => old[i] !== r[f])) updates.push({ id: r.id, ...row });
+    }
+  }
+  const deletes = [...sync.snapshot.keys()].filter((id) => !seen.has(id));
+  for (let i = 0; i < deletes.length; i += 200) check(await sb.from('items').delete().in('id', deletes.slice(i, i + 200)));
+  for (let i = 0; i < updates.length; i += 500) check(await sb.from('items').upsert(updates.slice(i, i + 500), { onConflict: 'id' }));
+  for (let i = 0; i < inserts.length; i += 500) check(await sb.from('items').insert(inserts.slice(i, i + 500)));
+}
+async function saveOnline() {
+  if (sync.busy) { sync.dirty = true; return; }
+  sync.busy = true;
+  $('#savingOverlay').classList.remove('hidden');
+  try {
+    do { sync.dirty = false; await pushChanges(); } while (sync.dirty);
+    setOnline(true);
+  } catch (ex) {
+    toast(`Could not save online: ${ex.message}. Reloading the latest data.`, 'error');
+  }
+  try { await pull(); render(); } catch { setOnline(false); }
+  sync.busy = false;
+  $('#savingOverlay').classList.add('hidden');
+}
+async function pollRemote() {
+  if (!db || sync.busy || document.hidden) return;
+  sync.busy = true;
+  try {
+    const v = await fetchVersion();
+    setOnline(true);
+    if (v !== sync.version) { await pull(); if (!sync.dirty) render(); }
+  } catch {
+    setOnline(false);
+  } finally {
+    sync.busy = false;
+    if (sync.dirty) saveOnline();
+  }
+}
 function setSyncPill(kind) {
-  const pill = $('#syncPill');
   const look = {
-    synced: ['bg-emerald-100 text-emerald-800', 'Synced · items.db', 'Saving to the same items.db as the desktop app.'],
-    offline: ['bg-red-100 text-red-800', 'Not saving: desktop app closed', 'Open the Item Checker desktop app, then reload this page. Changes made now will be lost.'],
-    local: ['bg-amber-100 text-amber-900', 'Browser only', 'This copy saves in this browser only. To share data with the desktop app, open it from the app with "Open in Browser".'],
+    online: ['bg-emerald-100 text-emerald-800', 'Online · shared', `Signed in as ${sync.email}. Changes are saved for everyone.`],
+    offline: ['bg-red-100 text-red-800', 'Offline · not saving', 'Cannot reach the online database. Check the internet connection.'],
   }[kind];
+  const pill = $('#syncPill');
   pill.className = `rounded-full px-3 py-1 text-xs font-medium ${look[0]}`;
   pill.textContent = look[1];
   pill.title = look[2];
@@ -382,48 +490,44 @@ function setSyncPill(kind) {
 function setOnline(on) {
   if (sync.online === on) return;
   sync.online = on;
-  setSyncPill(on ? 'synced' : 'offline');
-  if (!on) toast('Lost connection to the desktop app. Changes are not being saved.', 'error');
+  setSyncPill(on ? 'online' : 'offline');
 }
-async function fetchServerDb() {
-  const r = await fetch('/api/db', { cache: 'no-store' });
-  if (!r.ok) throw new Error(await r.text());
-  return { bytes: new Uint8Array(await r.arrayBuffer()), stamp: r.headers.get('X-Stamp') };
-}
-function saveToServer(bytes) {
-  sync.pending++;
-  sync.queue = sync.queue.then(async () => {
-    try {
-      const r = await fetch('/api/db', { method: 'PUT', body: bytes, headers: { 'Content-Type': 'application/x-sqlite3' } });
-      if (!r.ok) throw new Error(await r.text());
-      sync.stamp = (await r.json()).stamp;
-      setOnline(true);
-    } catch (ex) {
-      setOnline(false);
-    } finally {
-      sync.pending--;
-    }
+function waitForLogin() {
+  $('#loading').classList.add('hidden');
+  const view = $('#loginView'), f = $('#loginForm'), err = $('#loginError');
+  view.classList.remove('hidden');
+  view.classList.add('flex');
+  setTimeout(() => f.email.focus(), 50);
+  return new Promise((resolve) => {
+    f.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      err.classList.add('hidden');
+      const btn = f.querySelector('button[type=submit]');
+      btn.disabled = true;
+      const { data, error } = await sb.auth.signInWithPassword({ email: f.email.value.trim(), password: f.password.value });
+      btn.disabled = false;
+      if (error) {
+        err.textContent = /invalid/i.test(error.message) ? 'Wrong email or password.' : error.message;
+        err.classList.remove('hidden');
+        return;
+      }
+      view.classList.add('hidden');
+      view.classList.remove('flex');
+      $('#loading').classList.remove('hidden');
+      resolve(data.session);
+    });
   });
 }
-// Reload when the desktop app changed items.db (skipped while a save is in flight).
-async function pullIfChanged() {
-  if (!db || sync.pending) return;
-  try {
-    const r = await fetch('/api/stamp', { cache: 'no-store' });
-    if (!r.ok) throw new Error();
-    const { stamp } = await r.json();
-    setOnline(true);
-    if (stamp === sync.stamp || sync.pending) return;
-    const got = await fetchServerDb();
-    if (sync.pending) return;
-    const nd = new SQL.Database(got.bytes);
-    db.close();
-    db = nd;
-    sync.stamp = got.stamp;
-    render();
-  } catch {
-    setOnline(false);
+$('#btnSignOut').addEventListener('click', async () => {
+  await sb.auth.signOut();
+  location.reload();
+});
+
+function seedSample() {
+  for (const r of SAMPLE_ITEMS) {
+    exec('INSERT INTO items (item_name, sku, physical_stock, committed_stock, active) VALUES (?,?,?,?,?)', r);
   }
+  lsSet(LS_SAMPLE, '1');
 }
 
 function findSku(sku, exceptId = null) {
@@ -510,7 +614,7 @@ function render() {
   });
 
   const banner = $('#sampleBanner');
-  const showBanner = sampleFlag();
+  const showBanner = !ONLINE && lsGet(LS_SAMPLE) === '1';
   banner.classList.toggle('hidden', !showBanner);
   banner.classList.toggle('flex', showBanner);
 }
@@ -665,12 +769,12 @@ $('#btnClearSample').addEventListener('click', () => {
   confirmBox('Clear sample data?', 'All items currently in the list will be removed so you can start fresh.', 'Clear', () => {
     exec('DELETE FROM items');
     exec("DELETE FROM sqlite_sequence WHERE name = 'items'");
-    setSampleFlag(false);
+    lsDel(LS_SAMPLE);
     persist(); render();
     toast('Sample data cleared');
   });
 });
-$('#btnKeepSample').addEventListener('click', () => { setSampleFlag(false); persist(); render(); });
+$('#btnKeepSample').addEventListener('click', () => { lsDel(LS_SAMPLE); render(); });
 
 // ---------- Tabs ----------
 function showTab(name) {
@@ -827,7 +931,7 @@ function restoreDb(buf) {
   }
   db.close();
   db = nd;
-  setSampleFlag(false);
+  lsDel(LS_SAMPLE);
   persist();
   return query('SELECT COUNT(*) AS n FROM items')[0].n;
 }
@@ -984,35 +1088,44 @@ async function init() {
     $('#loading').querySelector('.animate-spin').remove();
     return;
   }
-  if (SERVER) {
+  if (ONLINE) {
+    let session;
     try {
-      const got = await fetchServerDb();
-      db = new SQL.Database(got.bytes);
-      sync.stamp = got.stamp;
+      sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+      session = (await sb.auth.getSession()).data.session;
     } catch (ex) {
-      $('#loadingText').innerHTML = `<b class="text-red-600">Could not read items.db from the desktop app.</b><br>Make sure Item Checker is open, then reload this page.<br><span class="text-xs">${esc(ex.message)}</span>`;
+      $('#loadingText').innerHTML = `<b class="text-red-600">Could not connect to the online database.</b><br>${esc(ex.message)}`;
       $('#loading').querySelector('.animate-spin').remove();
       return;
     }
-    setSyncPill('synced');
-    setInterval(pullIfChanged, 2000);
-    window.addEventListener('focus', pullIfChanged);
-  } else {
-    const saved = lsGet(LS_DB);
-    if (saved) {
-      try {
-        db = new SQL.Database(b64ToBytes(saved));
-        db.exec(SCHEMA);
-        if (lsGet(LS_SAMPLE) === '1') { setSampleFlag(true); lsDel(LS_SAMPLE); persist(); }
-      } catch { db = null; toast('Saved data could not be read. Starting with a new database.', 'error'); }
+    if (!session) session = await waitForLogin();
+    try {
+      await pull();
+    } catch (ex) {
+      $('#loadingText').innerHTML = `<b class="text-red-600">Could not load the item list.</b><br>${esc(ex.message)}<br>Check the internet connection and reload the page.`;
+      $('#loading').querySelector('.animate-spin').remove();
+      return;
     }
-    if (!db) {
-      db = new SQL.Database();
-      db.exec(SCHEMA);
-      seedSample();
-      persist();
-    }
-    setSyncPill('local');
+    sync.email = session.user.email;
+    setSyncPill('online');
+    $('#btnSignOut').classList.remove('hidden');
+    setInterval(pollRemote, 4000);
+    window.addEventListener('focus', pollRemote);
+    document.addEventListener('visibilitychange', pollRemote);
+    $('#loading').remove();
+    showTab('items');
+    return;
+  }
+  const saved = lsGet(LS_DB);
+  if (saved) {
+    try { db = new SQL.Database(b64ToBytes(saved)); db.exec(SCHEMA); }
+    catch { db = null; toast('Saved data could not be read. Starting with a new database.', 'error'); }
+  }
+  if (!db) {
+    db = new SQL.Database();
+    db.exec(SCHEMA);
+    seedSample();
+    persist();
   }
   $('#loading').remove();
   showTab('items');
