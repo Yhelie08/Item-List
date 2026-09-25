@@ -1,0 +1,6 @@
+items.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.lnk
+__pycache__/
