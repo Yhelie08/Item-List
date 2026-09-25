@@ -36,8 +36,8 @@ else:
 DB_PATH = os.environ.get('ITEMCHECKER_DB') or os.path.join(APP_DIR, 'items.db')
 
 # Shared online database (Supabase → Project Settings → API). Leave empty to keep the data on this PC only.
-SUPABASE_URL = ''
-SUPABASE_ANON_KEY = ''
+SUPABASE_URL = 'https://lszowqcpvqqvcnnhiseq.supabase.co'
+SUPABASE_ANON_KEY = 'sb_publishable_Ov8EbpvWuxLpobyqiBuN5w_AU9aIDME'
 # The web version everyone opens (GitHub Pages). Used by the "Open in Browser" button.
 WEB_URL = 'https://yhelie08.github.io/Item-List/'
 # Shared mode keeps its local copy here, so the original items.db is never overwritten.
@@ -254,7 +254,10 @@ class Cloud:
         return self.session['email'] if self.session else ''
 
     def _http(self, method, path, body=None, headers=None, token=None):
-        h = {'apikey': self.key, 'Authorization': f'Bearer {token or self.key}', 'Content-Type': 'application/json'}
+        # New-style publishable keys (sb_publishable_...) are not JWTs, so only a user token goes in Authorization.
+        h = {'apikey': self.key, 'Content-Type': 'application/json'}
+        if token:
+            h['Authorization'] = f'Bearer {token}'
         h.update(headers or {})
         data = json.dumps(body).encode('utf-8') if body is not None else None
         req = urllib.request.Request(self.url + path, data=data, method=method, headers=h)
