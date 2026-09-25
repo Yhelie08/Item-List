@@ -1,0 +1,935 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Item Checker</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/sql-wasm.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+  body { font-family: ui-sans-serif, system-ui, "Segoe UI", Roboto, Arial, sans-serif; }
+  .num { font-variant-numeric: tabular-nums; }
+  .modal-bg { background: rgba(15, 23, 42, .45); }
+  th.sortable { cursor: pointer; user-select: none; }
+  th.sortable:hover { color: #0f766e; }
+  textarea.sql { font-family: ui-monospace, Consolas, "Courier New", monospace; tab-size: 2; }
+</style>
+</head>
+<body class="bg-slate-100 text-slate-800 min-h-screen">
+
+<!-- Loading overlay -->
+<div id="loading" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-100">
+  <div class="text-center">
+    <div class="mx-auto mb-3 h-10 w-10 animate-spin rounded-full border-4 border-teal-600 border-t-transparent"></div>
+    <p id="loadingText" class="text-slate-600">Loading database…</p>
+  </div>
+</div>
+
+<!-- Header -->
+<header class="bg-teal-700 text-white shadow">
+  <div class="mx-auto flex max-w-7xl flex-wrap items-center gap-3 px-4 py-3">
+    <div class="mr-auto">
+      <h1 class="text-xl font-bold leading-tight">Item Checker</h1>
+      <p class="text-xs text-teal-100">Physical vs Committed stock · SQLite</p>
+    </div>
+    <nav class="flex rounded-lg bg-teal-800/60 p-1 text-sm">
+      <button data-tab="items" class="tab-btn rounded-md px-3 py-1.5 font-medium">Items</button>
+      <button data-tab="sql" class="tab-btn rounded-md px-3 py-1.5 font-medium">SQL Console</button>
+    </nav>
+    <button id="btnImport" class="rounded-lg bg-white/10 px-3 py-2 text-sm font-medium hover:bg-white/20">Import</button>
+    <div class="relative">
+      <button id="btnExport" class="rounded-lg bg-white/10 px-3 py-2 text-sm font-medium hover:bg-white/20">Export ▾</button>
+      <div id="exportMenu" class="absolute right-0 z-30 mt-1 hidden w-52 overflow-hidden rounded-lg bg-white text-sm text-slate-700 shadow-lg ring-1 ring-slate-200">
+        <button data-export="xlsx" class="block w-full px-4 py-2 text-left hover:bg-slate-100">Excel (.xlsx)</button>
+        <button data-export="csv" class="block w-full px-4 py-2 text-left hover:bg-slate-100">CSV (.csv)</button>
+        <button data-export="db" class="block w-full border-t border-slate-100 px-4 py-2 text-left hover:bg-slate-100">SQLite backup (.db)</button>
+      </div>
+    </div>
+    <button id="btnAdd" class="rounded-lg bg-white px-3 py-2 text-sm font-semibold text-teal-800 hover:bg-teal-50">+ Add Item</button>
+  </div>
+</header>
+
+<main class="mx-auto max-w-7xl px-4 py-5">
+
+  <!-- Sample data banner -->
+  <div id="sampleBanner" class="mb-4 hidden flex-wrap items-center gap-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+    <span class="mr-auto">The app started with <b>5 sample items</b> so you can try it out.</span>
+    <button id="btnClearSample" class="rounded-md bg-amber-500 px-3 py-1.5 font-semibold text-white hover:bg-amber-600">Clear sample data</button>
+    <button id="btnKeepSample" class="rounded-md px-3 py-1.5 font-medium hover:bg-amber-100">Keep</button>
+  </div>
+
+  <!-- ITEMS TAB -->
+  <section id="tab-items">
+    <!-- Stat cards -->
+    <div class="mb-4 grid grid-cols-2 gap-3 md:grid-cols-5">
+      <button data-card="all" class="stat-card rounded-xl bg-white p-4 text-left shadow-sm ring-1 ring-slate-200 hover:ring-teal-400">
+        <div class="text-xs font-medium uppercase tracking-wide text-slate-500">Total Items</div>
+        <div id="statTotal" class="num mt-1 text-2xl font-bold">0</div>
+      </button>
+      <button data-card="active" class="stat-card rounded-xl bg-white p-4 text-left shadow-sm ring-1 ring-slate-200 hover:ring-teal-400">
+        <div class="text-xs font-medium uppercase tracking-wide text-slate-500">Active</div>
+        <div id="statActive" class="num mt-1 text-2xl font-bold">0</div>
+      </button>
+      <div class="rounded-xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
+        <div class="text-xs font-medium uppercase tracking-wide text-slate-500">Physical QTY</div>
+        <div id="statPhysical" class="num mt-1 text-2xl font-bold">0</div>
+      </div>
+      <div class="rounded-xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
+        <div class="text-xs font-medium uppercase tracking-wide text-slate-500">Committed QTY</div>
+        <div id="statCommitted" class="num mt-1 text-2xl font-bold">0</div>
+      </div>
+      <button data-card="over" class="stat-card col-span-2 rounded-xl bg-white p-4 text-left shadow-sm ring-1 ring-slate-200 hover:ring-red-400 md:col-span-1">
+        <div class="text-xs font-medium uppercase tracking-wide text-red-600">Over-committed</div>
+        <div id="statOver" class="num mt-1 text-2xl font-bold text-red-600">0</div>
+      </button>
+    </div>
+
+    <!-- Filter bar -->
+    <div class="mb-3 flex flex-wrap items-center gap-2 rounded-xl bg-white p-3 shadow-sm ring-1 ring-slate-200">
+      <input id="fSearch" type="search" placeholder="Search Item Name or SKU…" class="min-w-[220px] flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500">
+      <select id="fActive" class="rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none">
+        <option value="all">All items</option>
+        <option value="1">Active only</option>
+        <option value="0">Inactive only</option>
+      </select>
+      <select id="fStatus" class="rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none">
+        <option value="all">All statuses</option>
+        <option value="OVER-COMMITTED">OVER-COMMITTED</option>
+        <option value="NO STOCK">NO STOCK</option>
+        <option value="LOW">LOW</option>
+        <option value="OK">OK</option>
+      </select>
+      <button id="btnReset" class="rounded-lg px-3 py-2 text-sm text-slate-600 hover:bg-slate-100">Reset</button>
+      <span id="rowCount" class="ml-auto text-sm text-slate-500"></span>
+    </div>
+
+    <!-- Table -->
+    <div class="overflow-x-auto rounded-xl bg-white shadow-sm ring-1 ring-slate-200">
+      <table class="min-w-full text-sm">
+        <thead class="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+          <tr>
+            <th data-sort="item_name" class="sortable px-4 py-3">Item Name</th>
+            <th data-sort="sku" class="sortable px-4 py-3">SKU</th>
+            <th data-sort="physical_stock" class="sortable px-4 py-3 text-right">Physical</th>
+            <th data-sort="committed_stock" class="sortable px-4 py-3 text-right">Committed</th>
+            <th data-sort="available_stock" class="sortable px-4 py-3 text-right">Available</th>
+            <th data-sort="status" class="sortable px-4 py-3">Status</th>
+            <th data-sort="active" class="sortable px-4 py-3">Active</th>
+            <th data-sort="updated_at" class="sortable px-4 py-3">Updated</th>
+            <th class="px-4 py-3 text-right">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="itemRows" class="divide-y divide-slate-100"></tbody>
+      </table>
+      <div id="emptyState" class="hidden px-4 py-12 text-center text-slate-500"></div>
+    </div>
+  </section>
+
+  <!-- SQL TAB -->
+  <section id="tab-sql" class="hidden">
+    <div class="rounded-xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
+      <div class="mb-2 flex flex-wrap gap-2" id="presets"></div>
+      <textarea id="sqlInput" rows="6" spellcheck="false" class="sql w-full rounded-lg border border-slate-300 p-3 text-sm focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500" placeholder="SELECT * FROM v_item_check WHERE status = 'LOW';"></textarea>
+      <div class="mt-2 flex flex-wrap items-center gap-2">
+        <button id="btnRunSql" class="rounded-lg bg-teal-700 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-800">Run (Ctrl+Enter)</button>
+        <button id="btnSqlCsv" class="hidden rounded-lg px-3 py-2 text-sm text-slate-600 hover:bg-slate-100">Download result (.csv)</button>
+        <span id="sqlMeta" class="ml-auto text-sm text-slate-500"></span>
+      </div>
+      <p class="mt-2 text-xs text-slate-500">Table <code>items</code>, view <code>v_item_check</code> (adds <code>available_stock</code> and <code>status</code>). Changes made here are saved.</p>
+    </div>
+    <div id="sqlError" class="mt-3 hidden rounded-lg border border-red-200 bg-red-50 px-4 py-3 font-mono text-sm text-red-700"></div>
+    <div id="sqlResult" class="mt-3 overflow-x-auto rounded-xl bg-white shadow-sm ring-1 ring-slate-200"></div>
+  </section>
+</main>
+
+<!-- Add / Edit modal -->
+<div id="itemModal" class="modal-bg fixed inset-0 z-40 hidden items-center justify-center p-4">
+  <form id="itemForm" class="w-full max-w-md rounded-xl bg-white shadow-xl" novalidate>
+    <div class="border-b border-slate-100 px-5 py-4">
+      <h2 id="itemModalTitle" class="text-lg font-semibold">Add Item</h2>
+    </div>
+    <div class="space-y-3 px-5 py-4">
+      <label class="block text-sm">
+        <span class="font-medium">Item Name <span class="text-red-500">*</span></span>
+        <input name="item_name" class="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500">
+      </label>
+      <label class="block text-sm">
+        <span class="font-medium">SKU <span class="text-red-500">*</span></span>
+        <input name="sku" class="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 font-mono focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500">
+      </label>
+      <div class="grid grid-cols-2 gap-3">
+        <label class="block text-sm">
+          <span class="font-medium">Physical Stock QTY</span>
+          <input name="physical_stock" type="number" min="0" step="1" value="0" class="num mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500">
+        </label>
+        <label class="block text-sm">
+          <span class="font-medium">Committed Stock</span>
+          <input name="committed_stock" type="number" min="0" step="1" value="0" class="num mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500">
+        </label>
+      </div>
+      <label class="flex items-center gap-2 text-sm">
+        <input name="active" type="checkbox" checked class="h-4 w-4 accent-teal-700">
+        <span class="font-medium">Active</span>
+      </label>
+      <p id="itemPreview" class="text-sm text-slate-500"></p>
+      <p id="itemError" class="hidden rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700"></p>
+    </div>
+    <div class="flex justify-end gap-2 border-t border-slate-100 px-5 py-3">
+      <button type="button" data-close class="rounded-lg px-4 py-2 text-sm hover:bg-slate-100">Cancel</button>
+      <button type="submit" class="rounded-lg bg-teal-700 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-800">Save</button>
+    </div>
+  </form>
+</div>
+
+<!-- Confirm modal -->
+<div id="confirmModal" class="modal-bg fixed inset-0 z-40 hidden items-center justify-center p-4">
+  <div class="w-full max-w-sm rounded-xl bg-white shadow-xl">
+    <div class="px-5 py-4">
+      <h2 id="confirmTitle" class="text-lg font-semibold">Are you sure?</h2>
+      <p id="confirmText" class="mt-2 text-sm text-slate-600"></p>
+    </div>
+    <div class="flex justify-end gap-2 border-t border-slate-100 px-5 py-3">
+      <button type="button" data-close class="rounded-lg px-4 py-2 text-sm hover:bg-slate-100">Cancel</button>
+      <button type="button" id="confirmOk" class="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700">Delete</button>
+    </div>
+  </div>
+</div>
+
+<!-- Import modal -->
+<div id="importModal" class="modal-bg fixed inset-0 z-40 hidden items-center justify-center p-4">
+  <div class="w-full max-w-lg rounded-xl bg-white shadow-xl">
+    <div class="border-b border-slate-100 px-5 py-4">
+      <h2 class="text-lg font-semibold">Import items</h2>
+    </div>
+    <div class="space-y-3 px-5 py-4 text-sm">
+      <p class="text-slate-600">Choose a <b>.csv</b> or <b>.xlsx</b> file with the columns
+        <i>Item Name, SKU, Physical Stock QTY, Committed Stock, Active</i>. An existing SKU is updated, a new SKU is added.
+        Or choose a <b>.db</b> backup to restore.</p>
+      <button id="btnTemplate" type="button" class="text-teal-700 underline hover:text-teal-900">Download import template</button>
+      <input id="importFile" type="file" accept=".csv,.xlsx,.xls,.db,.sqlite,.sqlite3" class="block w-full text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-teal-50 file:px-3 file:py-2 file:font-medium file:text-teal-800 hover:file:bg-teal-100">
+      <p id="restoreWarn" class="hidden rounded-lg bg-amber-50 px-3 py-2 text-amber-900">Restoring a .db backup <b>replaces all current items</b>.</p>
+      <div id="importResult" class="hidden"></div>
+    </div>
+    <div class="flex justify-end gap-2 border-t border-slate-100 px-5 py-3">
+      <button type="button" data-close class="rounded-lg px-4 py-2 text-sm hover:bg-slate-100">Close</button>
+      <button type="button" id="btnDoImport" disabled class="rounded-lg bg-teal-700 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-800 disabled:cursor-not-allowed disabled:opacity-40">Import</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toasts -->
+<div id="toasts" class="fixed bottom-4 right-4 z-50 flex flex-col gap-2"></div>
+
+<script>
+'use strict';
+
+// ---------- Config ----------
+const SQLJS_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/';
+const LS_DB = 'itemchecker.db.v1';
+const LS_SAMPLE = 'itemchecker.sample';
+const HEADERS = ['Item Name', 'SKU', 'Physical Stock QTY', 'Committed Stock', 'Active'];
+
+const SCHEMA = `
+CREATE TABLE IF NOT EXISTS items (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  item_name       TEXT    NOT NULL,
+  sku             TEXT    NOT NULL UNIQUE COLLATE NOCASE,
+  physical_stock  INTEGER NOT NULL DEFAULT 0 CHECK (physical_stock  >= 0),
+  committed_stock INTEGER NOT NULL DEFAULT 0 CHECK (committed_stock >= 0),
+  active          INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
+  created_at      TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+  updated_at      TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE TRIGGER IF NOT EXISTS trg_items_updated AFTER UPDATE ON items
+BEGIN
+  UPDATE items SET updated_at = datetime('now','localtime') WHERE id = OLD.id;
+END;
+CREATE VIEW IF NOT EXISTS v_item_check AS
+SELECT id, item_name, sku, physical_stock, committed_stock,
+       (physical_stock - committed_stock) AS available_stock, active,
+       CASE WHEN committed_stock > physical_stock       THEN 'OVER-COMMITTED'
+            WHEN physical_stock = 0                     THEN 'NO STOCK'
+            WHEN physical_stock - committed_stock <= 5  THEN 'LOW'
+            ELSE 'OK' END AS status,
+       updated_at
+FROM items;`;
+
+const SAMPLE_ITEMS = [
+  ['Nordic Dining Chair', 'HC-CHR-001', 120, 30, 1],
+  ['Oak Coffee Table',    'HC-TBL-014', 15,  18, 1],
+  ['Rattan Floor Lamp',   'HC-LMP-077', 0,   0,  0],
+  ['Linen Throw Pillow',  'HC-PLW-203', 40,  36, 1],
+  ['Ceramic Vase Set',    'HC-DEC-310', 60,  12, 1],
+];
+
+const PRESETS = [
+  ['Summary by status', `SELECT status, COUNT(*) AS items,
+       SUM(physical_stock) AS physical, SUM(committed_stock) AS committed,
+       SUM(available_stock) AS available
+FROM v_item_check
+GROUP BY status
+ORDER BY CASE status WHEN 'OVER-COMMITTED' THEN 1 WHEN 'NO STOCK' THEN 2 WHEN 'LOW' THEN 3 ELSE 4 END;`],
+  ['Over-committed', `SELECT item_name, sku, physical_stock, committed_stock, available_stock
+FROM v_item_check
+WHERE status = 'OVER-COMMITTED'
+ORDER BY available_stock;`],
+  ['Low / no stock (active)', `SELECT item_name, sku, physical_stock, committed_stock, available_stock, status
+FROM v_item_check
+WHERE active = 1 AND status IN ('LOW', 'NO STOCK')
+ORDER BY available_stock;`],
+  ['Inactive items', `SELECT item_name, sku, physical_stock, committed_stock
+FROM items
+WHERE active = 0
+ORDER BY item_name;`],
+  ['Recently updated', `SELECT item_name, sku, physical_stock, committed_stock, updated_at
+FROM items
+ORDER BY updated_at DESC
+LIMIT 20;`],
+  ['Schema', `SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%';`],
+];
+
+let SQL, db;
+const state = { search: '', active: 'all', status: 'all', sortCol: 'item_name', sortDir: 'asc' };
+const $ = (s) => document.querySelector(s);
+const $$ = (s) => document.querySelectorAll(s);
+
+// ---------- Helpers ----------
+function esc(v) {
+  return String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+function fmt(n) { return Number(n || 0).toLocaleString(); }
+function today() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+function bytesToB64(bytes) {
+  let s = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+function b64ToBytes(b64) {
+  const s = atob(b64), out = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i);
+  return out;
+}
+function download(blob, name) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+}
+function toast(msg, kind = 'ok') {
+  const colors = { ok: 'bg-slate-800', error: 'bg-red-600', warn: 'bg-amber-600' };
+  const el = document.createElement('div');
+  el.className = `${colors[kind]} max-w-sm rounded-lg px-4 py-3 text-sm text-white shadow-lg`;
+  el.textContent = msg;
+  $('#toasts').appendChild(el);
+  setTimeout(() => el.remove(), kind === 'error' ? 6000 : 3500);
+}
+function lsGet(k) { try { return localStorage.getItem(k); } catch { return null; } }
+function lsSet(k, v) { try { localStorage.setItem(k, v); return true; } catch { return false; } }
+function lsDel(k) { try { localStorage.removeItem(k); } catch {} }
+
+// ---------- Data layer ----------
+function query(sql, params = []) {
+  const st = db.prepare(sql);
+  try {
+    st.bind(params);
+    const rows = [];
+    while (st.step()) rows.push(st.getAsObject());
+    return rows;
+  } finally { st.free(); }
+}
+function exec(sql, params = []) { db.run(sql, params); }
+
+function persist() {
+  const ok = lsSet(LS_DB, bytesToB64(db.export()));
+  if (!ok) toast('Could not save in the browser (storage full or blocked). Export a .db backup now.', 'error');
+}
+
+function seedSample() {
+  for (const r of SAMPLE_ITEMS) {
+    exec('INSERT INTO items (item_name, sku, physical_stock, committed_stock, active) VALUES (?,?,?,?,?)', r);
+  }
+  lsSet(LS_SAMPLE, '1');
+}
+
+function findSku(sku, exceptId = null) {
+  const rows = query('SELECT id, item_name, sku FROM items WHERE sku = ? AND id IS NOT ?', [sku, exceptId]);
+  return rows[0] || null;
+}
+
+function listItems() {
+  const where = [], p = [];
+  if (state.search) {
+    const like = '%' + state.search.replace(/[\\%_]/g, (c) => '\\' + c) + '%';
+    where.push("(item_name LIKE ? ESCAPE '\\' OR sku LIKE ? ESCAPE '\\')");
+    p.push(like, like);
+  }
+  if (state.active !== 'all') { where.push('active = ?'); p.push(Number(state.active)); }
+  if (state.status !== 'all') { where.push('status = ?'); p.push(state.status); }
+  const cols = ['item_name', 'sku', 'physical_stock', 'committed_stock', 'available_stock', 'status', 'active', 'updated_at'];
+  const col = cols.includes(state.sortCol) ? state.sortCol : 'item_name';
+  const dir = state.sortDir === 'desc' ? 'DESC' : 'ASC';
+  const collate = ['item_name', 'sku', 'status'].includes(col) ? ' COLLATE NOCASE' : '';
+  const sql = `SELECT * FROM v_item_check ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+               ORDER BY ${col}${collate} ${dir}, item_name COLLATE NOCASE`;
+  return query(sql, p);
+}
+
+function totals() {
+  return query(`SELECT COUNT(*) AS total,
+                       COALESCE(SUM(active), 0) AS active,
+                       COALESCE(SUM(physical_stock), 0) AS physical,
+                       COALESCE(SUM(committed_stock), 0) AS committed,
+                       COALESCE(SUM(status = 'OVER-COMMITTED'), 0) AS over
+                FROM v_item_check`)[0];
+}
+
+// ---------- Rendering ----------
+const BADGE = {
+  'OVER-COMMITTED': 'bg-red-100 text-red-700 ring-red-200',
+  'NO STOCK': 'bg-slate-200 text-slate-700 ring-slate-300',
+  'LOW': 'bg-amber-100 text-amber-800 ring-amber-200',
+  'OK': 'bg-emerald-100 text-emerald-700 ring-emerald-200',
+};
+
+function render() {
+  const t = totals();
+  $('#statTotal').textContent = fmt(t.total);
+  $('#statActive').textContent = fmt(t.active);
+  $('#statPhysical').textContent = fmt(t.physical);
+  $('#statCommitted').textContent = fmt(t.committed);
+  $('#statOver').textContent = fmt(t.over);
+
+  const rows = listItems();
+  $('#rowCount').textContent = `Showing ${fmt(rows.length)} of ${fmt(t.total)}`;
+  $('#itemRows').innerHTML = rows.map((r) => `
+    <tr class="${r.active ? '' : 'text-slate-400'} hover:bg-slate-50">
+      <td class="px-4 py-2.5 font-medium ${r.active ? 'text-slate-800' : ''}">${esc(r.item_name)}</td>
+      <td class="px-4 py-2.5 font-mono text-xs">${esc(r.sku)}</td>
+      <td class="num px-4 py-2.5 text-right">${fmt(r.physical_stock)}</td>
+      <td class="num px-4 py-2.5 text-right">${fmt(r.committed_stock)}</td>
+      <td class="num px-4 py-2.5 text-right font-semibold ${r.available_stock < 0 ? 'text-red-600' : ''}">${fmt(r.available_stock)}</td>
+      <td class="px-4 py-2.5"><span class="inline-block whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${BADGE[r.status]}">${esc(r.status)}</span></td>
+      <td class="px-4 py-2.5">
+        <button data-toggle="${r.id}" title="${r.active ? 'Mark inactive' : 'Mark active'}"
+          class="relative inline-flex h-5 w-9 items-center rounded-full transition ${r.active ? 'bg-teal-600' : 'bg-slate-300'}">
+          <span class="inline-block h-4 w-4 rounded-full bg-white shadow transition ${r.active ? 'translate-x-4' : 'translate-x-0.5'}"></span>
+        </button>
+      </td>
+      <td class="whitespace-nowrap px-4 py-2.5 text-xs text-slate-500">${esc(r.updated_at)}</td>
+      <td class="whitespace-nowrap px-4 py-2.5 text-right">
+        <button data-edit="${r.id}" class="rounded px-2 py-1 text-teal-700 hover:bg-teal-50">Edit</button>
+        <button data-delete="${r.id}" class="rounded px-2 py-1 text-red-600 hover:bg-red-50">Delete</button>
+      </td>
+    </tr>`).join('');
+
+  const empty = $('#emptyState');
+  if (rows.length) { empty.classList.add('hidden'); }
+  else {
+    empty.classList.remove('hidden');
+    empty.textContent = t.total ? 'No items match the current filters.' : 'No items yet. Click “+ Add Item” or Import a file.';
+  }
+
+  $$('th[data-sort]').forEach((th) => {
+    const base = th.textContent.replace(/ [▲▼]$/, '');
+    th.textContent = th.dataset.sort === state.sortCol ? `${base} ${state.sortDir === 'asc' ? '▲' : '▼'}` : base;
+  });
+
+  const banner = $('#sampleBanner');
+  const showBanner = lsGet(LS_SAMPLE) === '1';
+  banner.classList.toggle('hidden', !showBanner);
+  banner.classList.toggle('flex', showBanner);
+}
+
+// ---------- Modals ----------
+function openModal(id) { const m = $(id); m.classList.remove('hidden'); m.classList.add('flex'); }
+function closeModal(el) { const m = el.closest('.modal-bg'); m.classList.add('hidden'); m.classList.remove('flex'); }
+$$('.modal-bg').forEach((m) => {
+  m.addEventListener('mousedown', (e) => { if (e.target === m) closeModal(m); });
+  m.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', () => closeModal(m)));
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') $$('.modal-bg.flex').forEach(closeModal);
+});
+
+let confirmAction = null;
+function confirmBox(title, text, okLabel, action) {
+  $('#confirmTitle').textContent = title;
+  $('#confirmText').textContent = text;
+  $('#confirmOk').textContent = okLabel;
+  confirmAction = action;
+  openModal('#confirmModal');
+}
+$('#confirmOk').addEventListener('click', () => {
+  closeModal($('#confirmOk'));
+  if (confirmAction) confirmAction();
+  confirmAction = null;
+});
+
+// ---------- Add / Edit ----------
+let editingId = null;
+const form = $('#itemForm');
+
+function openItemForm(id = null) {
+  editingId = id;
+  form.reset();
+  $('#itemError').classList.add('hidden');
+  if (id) {
+    const r = query('SELECT * FROM items WHERE id = ?', [id])[0];
+    if (!r) return;
+    $('#itemModalTitle').textContent = 'Edit Item';
+    form.item_name.value = r.item_name;
+    form.sku.value = r.sku;
+    form.physical_stock.value = r.physical_stock;
+    form.committed_stock.value = r.committed_stock;
+    form.active.checked = !!r.active;
+  } else {
+    $('#itemModalTitle').textContent = 'Add Item';
+  }
+  updatePreview();
+  openModal('#itemModal');
+  setTimeout(() => form.item_name.focus(), 50);
+}
+
+function updatePreview() {
+  const p = Number(form.physical_stock.value), c = Number(form.committed_stock.value);
+  if (!Number.isInteger(p) || !Number.isInteger(c) || p < 0 || c < 0) { $('#itemPreview').textContent = ''; return; }
+  const status = c > p ? 'OVER-COMMITTED' : p === 0 ? 'NO STOCK' : p - c <= 5 ? 'LOW' : 'OK';
+  $('#itemPreview').innerHTML = `Available: <b class="num">${fmt(p - c)}</b> · Status: <span class="rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${BADGE[status]}">${status}</span>`;
+}
+form.physical_stock.addEventListener('input', updatePreview);
+form.committed_stock.addEventListener('input', updatePreview);
+
+function parseFormQty(input, label) {
+  const s = input.value.trim();
+  if (s === '') return 0;
+  const n = Number(s);
+  if (!Number.isInteger(n)) throw new Error(`${label} must be a whole number.`);
+  if (n < 0) throw new Error(`${label} cannot be negative.`);
+  return n;
+}
+
+form.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const err = $('#itemError');
+  try {
+    const name = form.item_name.value.trim();
+    const sku = form.sku.value.trim();
+    if (!name) throw new Error('Item Name is required.');
+    if (!sku) throw new Error('SKU is required.');
+    const phys = parseFormQty(form.physical_stock, 'Physical Stock QTY');
+    const comm = parseFormQty(form.committed_stock, 'Committed Stock');
+    const active = form.active.checked ? 1 : 0;
+    const dup = findSku(sku, editingId);
+    if (dup) throw new Error(`SKU "${dup.sku}" already exists (${dup.item_name}). SKUs are not case-sensitive.`);
+    if (editingId) {
+      exec('UPDATE items SET item_name=?, sku=?, physical_stock=?, committed_stock=?, active=? WHERE id=?',
+        [name, sku, phys, comm, active, editingId]);
+      toast(`Updated ${sku}`);
+    } else {
+      exec('INSERT INTO items (item_name, sku, physical_stock, committed_stock, active) VALUES (?,?,?,?,?)',
+        [name, sku, phys, comm, active]);
+      toast(`Added ${sku}`);
+    }
+    persist();
+    closeModal(form);
+    render();
+  } catch (ex) {
+    err.textContent = ex.message;
+    err.classList.remove('hidden');
+  }
+});
+
+// ---------- Table actions ----------
+$('#itemRows').addEventListener('click', (e) => {
+  const t = e.target.closest('button');
+  if (!t) return;
+  if (t.dataset.edit) openItemForm(Number(t.dataset.edit));
+  else if (t.dataset.toggle) {
+    exec('UPDATE items SET active = 1 - active WHERE id = ?', [Number(t.dataset.toggle)]);
+    persist(); render();
+  } else if (t.dataset.delete) {
+    const id = Number(t.dataset.delete);
+    const r = query('SELECT item_name, sku FROM items WHERE id = ?', [id])[0];
+    if (!r) return;
+    confirmBox('Delete item?', `${r.item_name} (${r.sku}) will be permanently removed.`, 'Delete', () => {
+      exec('DELETE FROM items WHERE id = ?', [id]);
+      persist(); render();
+      toast(`Deleted ${r.sku}`);
+    });
+  }
+});
+
+$$('th[data-sort]').forEach((th) => th.addEventListener('click', () => {
+  const col = th.dataset.sort;
+  if (state.sortCol === col) state.sortDir = state.sortDir === 'asc' ? 'desc' : 'asc';
+  else { state.sortCol = col; state.sortDir = 'asc'; }
+  render();
+}));
+
+// ---------- Filters ----------
+function syncFilters() {
+  $('#fSearch').value = state.search;
+  $('#fActive').value = state.active;
+  $('#fStatus').value = state.status;
+}
+$('#fSearch').addEventListener('input', (e) => { state.search = e.target.value.trim(); render(); });
+$('#fActive').addEventListener('change', (e) => { state.active = e.target.value; render(); });
+$('#fStatus').addEventListener('change', (e) => { state.status = e.target.value; render(); });
+$('#btnReset').addEventListener('click', () => {
+  Object.assign(state, { search: '', active: 'all', status: 'all' });
+  syncFilters(); render();
+});
+$$('.stat-card').forEach((c) => c.addEventListener('click', () => {
+  const k = c.dataset.card;
+  Object.assign(state, { search: '', active: k === 'active' ? '1' : 'all', status: k === 'over' ? 'OVER-COMMITTED' : 'all' });
+  syncFilters(); render();
+}));
+
+// ---------- Sample banner ----------
+$('#btnClearSample').addEventListener('click', () => {
+  confirmBox('Clear sample data?', 'All items currently in the list will be removed so you can start fresh.', 'Clear', () => {
+    exec('DELETE FROM items');
+    exec("DELETE FROM sqlite_sequence WHERE name = 'items'");
+    lsDel(LS_SAMPLE);
+    persist(); render();
+    toast('Sample data cleared');
+  });
+});
+$('#btnKeepSample').addEventListener('click', () => { lsDel(LS_SAMPLE); render(); });
+
+// ---------- Tabs ----------
+function showTab(name) {
+  $('#tab-items').classList.toggle('hidden', name !== 'items');
+  $('#tab-sql').classList.toggle('hidden', name !== 'sql');
+  $$('.tab-btn').forEach((b) => {
+    const on = b.dataset.tab === name;
+    b.classList.toggle('bg-white', on);
+    b.classList.toggle('text-teal-800', on);
+    b.classList.toggle('text-teal-50', !on);
+  });
+  if (name === 'items') render();
+}
+$$('.tab-btn').forEach((b) => b.addEventListener('click', () => showTab(b.dataset.tab)));
+
+// ---------- Export ----------
+function exportRows() {
+  return query('SELECT item_name, sku, physical_stock, committed_stock, active FROM items ORDER BY item_name COLLATE NOCASE, sku');
+}
+function itemsSheet(rows, boolActive) {
+  const aoa = [HEADERS, ...rows.map((r) => [r.item_name, r.sku, r.physical_stock, r.committed_stock,
+    boolActive ? !!r.active : (r.active ? 'TRUE' : 'FALSE')])];
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!cols'] = [{ wch: 34 }, { wch: 16 }, { wch: 18 }, { wch: 16 }, { wch: 8 }];
+  return ws;
+}
+function exportAs(kind) {
+  $('#exportMenu').classList.add('hidden');
+  const name = `ItemChecker_${today()}`;
+  if (kind === 'db') {
+    download(new Blob([db.export()], { type: 'application/x-sqlite3' }), `${name}.db`);
+    toast('SQLite backup downloaded');
+    return;
+  }
+  const rows = exportRows();
+  if (kind === 'xlsx') {
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, itemsSheet(rows, true), 'Items');
+    XLSX.writeFile(wb, `${name}.xlsx`);
+  } else {
+    const csv = XLSX.utils.sheet_to_csv(itemsSheet(rows, false));
+    download(new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' }), `${name}.csv`);
+  }
+  toast(`Exported ${fmt(rows.length)} items`);
+}
+$('#btnExport').addEventListener('click', (e) => { e.stopPropagation(); $('#exportMenu').classList.toggle('hidden'); });
+document.addEventListener('click', () => $('#exportMenu').classList.add('hidden'));
+$$('[data-export]').forEach((b) => b.addEventListener('click', () => exportAs(b.dataset.export)));
+
+// ---------- Import ----------
+const HEADER_ALIASES = {
+  item_name: ['itemname', 'name', 'item', 'productname'],
+  sku: ['sku', 'itemcode', 'skucode'],
+  physical_stock: ['physicalstockqty', 'physicalstock', 'physicalqty', 'physical', 'stockonhand', 'onhand', 'qtyonhand'],
+  committed_stock: ['committedstock', 'committedstockqty', 'committedqty', 'committed'],
+  active: ['active', 'isactive'],
+};
+const normHeader = (h) => String(h ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+function mapHeaders(row) {
+  const map = {};
+  row.forEach((h, i) => {
+    const n = normHeader(h);
+    for (const [field, aliases] of Object.entries(HEADER_ALIASES)) {
+      if (map[field] === undefined && aliases.includes(n)) map[field] = i;
+    }
+  });
+  return map;
+}
+function parseQty(v) {
+  const s = String(v ?? '').trim().replace(/[,\s]/g, '');
+  if (s === '') return 0;
+  if (!/^-?\d+(\.0+)?$/.test(s)) return NaN;
+  return parseInt(s, 10);
+}
+function parseActive(v) {
+  const s = String(v ?? '').trim().toLowerCase();
+  if (s === '') return 1;
+  if (['true', 'yes', 'y', '1', 'active'].includes(s)) return 1;
+  if (['false', 'no', 'n', '0', 'inactive'].includes(s)) return 0;
+  return null;
+}
+function decodeText(buf) {
+  try { return new TextDecoder('utf-8', { fatal: true }).decode(buf); }
+  catch { return new TextDecoder('windows-1252').decode(buf); }
+}
+
+function readSheetRows(file, buf) {
+  const ext = file.name.split('.').pop().toLowerCase();
+  const wb = ext === 'csv'
+    ? XLSX.read(decodeText(buf), { type: 'string', raw: true })
+    : XLSX.read(buf, { type: 'array' });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  return XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: '', blankrows: true });
+}
+
+function importItems(rows) {
+  let headerIdx = -1, map = null;
+  for (let i = 0; i < Math.min(rows.length, 10); i++) {
+    const m = mapHeaders(rows[i]);
+    if (m.item_name !== undefined && m.sku !== undefined) { headerIdx = i; map = m; break; }
+  }
+  if (headerIdx < 0) throw new Error('Could not find the header row. The file needs at least the columns "Item Name" and "SKU".');
+
+  const get = (row, f) => (map[f] === undefined ? '' : row[map[f]]);
+  let added = 0, updated = 0;
+  const skipped = [];
+  db.exec('BEGIN');
+  try {
+    for (let i = headerIdx + 1; i < rows.length; i++) {
+      const row = rows[i], rowNo = i + 1;
+      if (!row || row.every((c) => String(c ?? '').trim() === '')) continue;
+      const name = String(get(row, 'item_name')).trim();
+      const sku = String(get(row, 'sku')).trim();
+      const phys = parseQty(get(row, 'physical_stock'));
+      const comm = parseQty(get(row, 'committed_stock'));
+      const active = parseActive(get(row, 'active'));
+      let why = null;
+      if (!name) why = 'Item Name is required';
+      else if (!sku) why = 'SKU is required';
+      else if (Number.isNaN(phys)) why = `Physical Stock QTY "${get(row, 'physical_stock')}" is not a whole number`;
+      else if (Number.isNaN(comm)) why = `Committed Stock "${get(row, 'committed_stock')}" is not a whole number`;
+      else if (phys < 0) why = 'Physical Stock QTY cannot be negative';
+      else if (comm < 0) why = 'Committed Stock cannot be negative';
+      else if (active === null) why = `Active "${get(row, 'active')}" is not TRUE/FALSE, YES/NO, 1/0 or Active`;
+      if (why) { skipped.push({ rowNo, sku, why }); continue; }
+
+      const exists = !!findSku(sku);
+      exec(`INSERT INTO items (item_name, sku, physical_stock, committed_stock, active) VALUES (?,?,?,?,?)
+            ON CONFLICT(sku) DO UPDATE SET item_name = excluded.item_name,
+              physical_stock = excluded.physical_stock, committed_stock = excluded.committed_stock,
+              active = excluded.active`, [name, sku, phys, comm, active]);
+      exists ? updated++ : added++;
+    }
+    db.exec('COMMIT');
+  } catch (ex) {
+    db.exec('ROLLBACK');
+    throw ex;
+  }
+  return { added, updated, skipped };
+}
+
+function restoreDb(buf) {
+  let nd;
+  try {
+    nd = new SQL.Database(buf);
+    const t = nd.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'items'");
+    if (!t.length) throw new Error('This .db file does not contain an items table.');
+    nd.exec(SCHEMA);
+    nd.exec('SELECT id, item_name, sku, status FROM v_item_check LIMIT 1');
+  } catch (ex) {
+    if (nd) nd.close();
+    throw new Error(/not a database|malformed/i.test(ex.message) ? 'This file is not a valid SQLite database.' : ex.message);
+  }
+  db.close();
+  db = nd;
+  lsDel(LS_SAMPLE);
+  persist();
+  return query('SELECT COUNT(*) AS n FROM items')[0].n;
+}
+
+function showImportResult(html, kind) {
+  const box = $('#importResult');
+  const cls = { ok: 'bg-emerald-50 text-emerald-900', warn: 'bg-amber-50 text-amber-900', error: 'bg-red-50 text-red-700' }[kind];
+  box.className = `rounded-lg px-3 py-2 ${cls}`;
+  box.innerHTML = html;
+}
+
+$('#btnImport').addEventListener('click', () => {
+  $('#importFile').value = '';
+  $('#importResult').className = 'hidden';
+  $('#restoreWarn').classList.add('hidden');
+  $('#btnDoImport').disabled = true;
+  openModal('#importModal');
+});
+$('#importFile').addEventListener('change', (e) => {
+  const f = e.target.files[0];
+  $('#btnDoImport').disabled = !f;
+  $('#importResult').className = 'hidden';
+  $('#restoreWarn').classList.toggle('hidden', !(f && /\.(db|sqlite3?)$/i.test(f.name)));
+});
+$('#btnDoImport').addEventListener('click', async () => {
+  const f = $('#importFile').files[0];
+  if (!f) return;
+  const btn = $('#btnDoImport');
+  btn.disabled = true;
+  try {
+    const buf = new Uint8Array(await f.arrayBuffer());
+    if (/\.(db|sqlite3?)$/i.test(f.name)) {
+      const n = restoreDb(buf);
+      showImportResult(`Backup restored: <b>${fmt(n)}</b> items loaded.`, 'ok');
+    } else {
+      const res = importItems(readSheetRows(f, buf));
+      persist();
+      let html = `<b>${fmt(res.added)}</b> added, <b>${fmt(res.updated)}</b> updated, <b>${fmt(res.skipped.length)}</b> skipped.`;
+      if (res.skipped.length) {
+        html += '<ul class="mt-2 max-h-40 list-disc overflow-y-auto pl-5 text-xs">' +
+          res.skipped.map((s) => `<li>Row ${s.rowNo}${s.sku ? ` (${esc(s.sku)})` : ''}: ${esc(s.why)}</li>`).join('') + '</ul>';
+      }
+      showImportResult(html, res.skipped.length ? 'warn' : 'ok');
+    }
+    $('#importFile').value = '';
+    render();
+  } catch (ex) {
+    showImportResult(esc(ex.message), 'error');
+    btn.disabled = false;
+  }
+});
+
+$('#btnTemplate').addEventListener('click', () => {
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet([HEADERS]);
+  ws['!cols'] = [{ wch: 34 }, { wch: 16 }, { wch: 18 }, { wch: 16 }, { wch: 8 }];
+  XLSX.utils.book_append_sheet(wb, ws, 'Items');
+  const help = XLSX.utils.aoa_to_sheet([
+    ['How to fill the Items sheet'],
+    ['Item Name and SKU are required.'],
+    ['SKU must be unique. It is not case-sensitive (HC-001 = hc-001). An existing SKU is updated on import.'],
+    ['Physical Stock QTY and Committed Stock: whole numbers, 0 or more. Blank = 0. Commas are fine (1,200).'],
+    ['Active: TRUE/FALSE, YES/NO, 1/0, or Active/Inactive. Blank = TRUE.'],
+    [],
+    ['Example'],
+    HEADERS,
+    ['Nordic Dining Chair', 'HC-CHR-001', 120, 30, 'TRUE'],
+    ['Oak Coffee Table', 'HC-TBL-014', 15, 18, 'TRUE'],
+    ['Rattan Floor Lamp', 'HC-LMP-077', 0, 0, 'FALSE'],
+  ]);
+  help['!cols'] = [{ wch: 34 }, { wch: 16 }, { wch: 18 }, { wch: 16 }, { wch: 8 }];
+  XLSX.utils.book_append_sheet(wb, help, 'Instructions');
+  XLSX.writeFile(wb, 'ItemChecker_Import_Template.xlsx');
+});
+
+// ---------- SQL Console ----------
+let lastResult = null;
+$('#presets').innerHTML = PRESETS.map(([label], i) =>
+  `<button data-preset="${i}" class="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-700 hover:bg-teal-100 hover:text-teal-800">${esc(label)}</button>`).join('');
+$('#presets').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-preset]');
+  if (!b) return;
+  $('#sqlInput').value = PRESETS[Number(b.dataset.preset)][1];
+  runSql();
+});
+
+function runSql() {
+  const sql = $('#sqlInput').value.trim();
+  const errBox = $('#sqlError'), out = $('#sqlResult');
+  errBox.classList.add('hidden');
+  if (!sql) return;
+  const before = db.exec('SELECT total_changes()')[0].values[0][0];
+  const t0 = performance.now();
+  let res;
+  try {
+    res = db.exec(sql);
+  } catch (ex) {
+    errBox.textContent = ex.message;
+    errBox.classList.remove('hidden');
+    out.innerHTML = '';
+    $('#sqlMeta').textContent = '';
+    $('#btnSqlCsv').classList.add('hidden');
+    return;
+  }
+  const ms = (performance.now() - t0).toFixed(1);
+  // getRowsModified() excludes trigger writes but is stale after a plain SELECT, so gate it on total_changes().
+  const modified = db.getRowsModified();
+  const anyChange = db.exec('SELECT total_changes()')[0].values[0][0] > before;
+  const changed = anyChange ? modified : 0;
+  const wrote = anyChange || /\b(insert|update|delete|replace|create|drop|alter)\b/i.test(sql);
+  if (wrote) persist();
+
+  lastResult = res.length ? res[res.length - 1] : null;
+  $('#btnSqlCsv').classList.toggle('hidden', !lastResult);
+  if (!lastResult) {
+    out.innerHTML = `<p class="px-4 py-6 text-sm text-slate-600">Query ran. ${changed > 0 ? `<b>${fmt(changed)}</b> row(s) changed and saved.` : 'No rows returned.'}</p>`;
+    $('#sqlMeta').textContent = `${ms} ms`;
+    return;
+  }
+  const LIMIT = 1000;
+  const vals = lastResult.values;
+  const numCol = lastResult.columns.map((_, i) => { const v = vals.find((r) => r[i] !== null); return !!v && typeof v[i] === 'number'; });
+  out.innerHTML = `<table class="min-w-full text-sm">
+    <thead class="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500"><tr>${lastResult.columns.map((c, i) => `<th class="px-4 py-2 ${numCol[i] ? 'text-right' : ''}">${esc(c)}</th>`).join('')}</tr></thead>
+    <tbody class="divide-y divide-slate-100">${vals.slice(0, LIMIT).map((row) => `<tr class="hover:bg-slate-50">${row.map((v) =>
+      `<td class="px-4 py-2 ${typeof v === 'number' ? 'num text-right' : ''} ${v === null ? 'italic text-slate-400' : ''} whitespace-pre-wrap">${v === null ? 'NULL' : esc(v)}</td>`).join('')}</tr>`).join('')}</tbody>
+  </table>`;
+  $('#sqlMeta').textContent = `${fmt(vals.length)} row(s)${vals.length > LIMIT ? `, showing first ${LIMIT}` : ''} · ${ms} ms${changed > 0 ? ` · ${fmt(changed)} changed` : ''}`;
+}
+$('#btnRunSql').addEventListener('click', runSql);
+$('#sqlInput').addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); runSql(); }
+});
+$('#btnSqlCsv').addEventListener('click', () => {
+  if (!lastResult) return;
+  const ws = XLSX.utils.aoa_to_sheet([lastResult.columns, ...lastResult.values]);
+  download(new Blob(['﻿' + XLSX.utils.sheet_to_csv(ws)], { type: 'text/csv;charset=utf-8' }), `ItemChecker_query_${today()}.csv`);
+});
+
+// ---------- Buttons ----------
+$('#btnAdd').addEventListener('click', () => openItemForm());
+
+// ---------- Init ----------
+async function init() {
+  if (typeof initSqlJs === 'undefined' || typeof XLSX === 'undefined') {
+    $('#loadingText').innerHTML = '<b class="text-red-600">Could not load the app libraries.</b><br>Check your internet connection and reload the page.';
+    $('#loading').querySelector('.animate-spin').remove();
+    return;
+  }
+  try {
+    SQL = await initSqlJs({ locateFile: (f) => SQLJS_CDN + f });
+  } catch (ex) {
+    $('#loadingText').innerHTML = `<b class="text-red-600">Could not start the SQL engine.</b><br>${esc(ex.message)}`;
+    $('#loading').querySelector('.animate-spin').remove();
+    return;
+  }
+  const saved = lsGet(LS_DB);
+  if (saved) {
+    try { db = new SQL.Database(b64ToBytes(saved)); db.exec(SCHEMA); }
+    catch { db = null; toast('Saved data could not be read. Starting with a new database.', 'error'); }
+  }
+  if (!db) {
+    db = new SQL.Database();
+    db.exec(SCHEMA);
+    seedSample();
+    persist();
+  }
+  $('#loading').remove();
+  showTab('items');
+}
+init();
+</script>
+</body>
+</html>
