@@ -44,7 +44,7 @@ WEB_URL = 'https://yhelie08.github.io/Item-List/'
 CACHE_PATH = os.environ.get('ITEMCHECKER_CACHE') or os.path.join(APP_DIR, 'items_online_cache.db')
 SESSION_PATH = os.path.join(os.environ.get('APPDATA') or os.path.expanduser('~'), 'ItemChecker', 'session.json')
 
-HEADERS = ['Item Name', 'SKU', 'Physical Stock QTY', 'Committed Stock', 'Active']
+HEADERS = ['Item Name', 'SKU', 'ItemRef', 'Physical Stock QTY', 'Committed Stock', 'Active']
 STATUSES = ['OVER-COMMITTED', 'NO STOCK', 'LOW', 'OK']
 
 SCHEMA = """
@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS items (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
   item_name       TEXT    NOT NULL,
   sku             TEXT    NOT NULL UNIQUE COLLATE NOCASE,
+  item_ref        TEXT    NOT NULL DEFAULT '',
   physical_stock  INTEGER NOT NULL DEFAULT 0 CHECK (physical_stock  >= 0),
   committed_stock INTEGER NOT NULL DEFAULT 0 CHECK (committed_stock >= 0),
   active          INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
@@ -62,8 +63,10 @@ CREATE TRIGGER IF NOT EXISTS trg_items_updated AFTER UPDATE ON items
 BEGIN
   UPDATE items SET updated_at = datetime('now','localtime') WHERE id = OLD.id;
 END;
-CREATE VIEW IF NOT EXISTS v_item_check AS
-SELECT id, item_name, sku, physical_stock, committed_stock,
+"""
+VIEW = """
+CREATE VIEW v_item_check AS
+SELECT id, item_name, sku, item_ref, physical_stock, committed_stock,
        (physical_stock - committed_stock) AS available_stock, active,
        CASE WHEN committed_stock > physical_stock       THEN 'OVER-COMMITTED'
             WHEN physical_stock = 0                     THEN 'NO STOCK'
@@ -108,6 +111,14 @@ LIMIT 20;"""),
 ]
 
 
+def ensure_schema(conn):
+    """Create the tables, and upgrade databases made before the ItemRef column existed."""
+    conn.executescript(SCHEMA)
+    if 'item_ref' not in [c[1] for c in conn.execute('PRAGMA table_info(items)')]:
+        conn.execute("ALTER TABLE items ADD COLUMN item_ref TEXT NOT NULL DEFAULT ''")
+    conn.executescript('DROP VIEW IF EXISTS v_item_check;' + VIEW)
+
+
 def compute_status(physical, committed):
     if committed > physical:
         return 'OVER-COMMITTED'
@@ -123,6 +134,7 @@ def compute_status(physical, committed):
 HEADER_ALIASES = {
     'item_name': ['itemname', 'name', 'item', 'productname'],
     'sku': ['sku', 'itemcode', 'skucode'],
+    'item_ref': ['itemref', 'itemreference', 'reference', 'ref', 'refno', 'referenceno', 'referencenumber'],
     'physical_stock': ['physicalstockqty', 'physicalstock', 'physicalqty', 'physical', 'stockonhand', 'onhand', 'qtyonhand'],
     'committed_stock': ['committedstock', 'committedstockqty', 'committedqty', 'committed'],
     'active': ['active', 'isactive'],
@@ -223,7 +235,7 @@ def split_sql(sql):
 
 # ---------------------------------------------------------------- Supabase
 
-FIELDS = ('item_name', 'sku', 'physical_stock', 'committed_stock', 'active')
+FIELDS = ('item_name', 'sku', 'item_ref', 'physical_stock', 'committed_stock', 'active')
 
 
 class CloudError(Exception):
@@ -330,6 +342,9 @@ class Cloud:
         while True:
             page = self.api('GET', f'items?select=id,{",".join(FIELDS)},created_at,updated_at'
                                    f'&order=id&limit={self.PAGE}&offset={offset}')
+            for r in page:
+                if r.get('item_ref') is None:
+                    r['item_ref'] = ''
             rows += page
             if len(page) < self.PAGE:
                 return rows
@@ -361,7 +376,7 @@ class Store:
         is_new = not os.path.exists(path)
         self.conn = sqlite3.connect(path, isolation_level=None)
         self.conn.row_factory = sqlite3.Row
-        self.conn.executescript(SCHEMA)
+        ensure_schema(self.conn)
         if is_new and seed:
             self.conn.execute('BEGIN')
             self.conn.executemany(
@@ -389,8 +404,8 @@ class Store:
         try:
             self.conn.execute('DELETE FROM items')
             self.conn.executemany(
-                'INSERT INTO items (id, item_name, sku, physical_stock, committed_stock, active, created_at, updated_at) '
-                'VALUES (?,?,?,?,?,?,?,?)',
+                f'INSERT INTO items (id, {", ".join(FIELDS)}, created_at, updated_at) '
+                'VALUES (?,?,?,?,?,?,?,?,?)',
                 [(r['id'], *(r[f] for f in FIELDS), local_time(r['created_at']), local_time(r['updated_at'])) for r in rows])
             self.conn.execute('COMMIT')
         except Exception:
@@ -417,17 +432,17 @@ class Store:
         where, params = [], []
         if search:
             like = '%' + re.sub(r'([\\%_])', r'\\\1', search) + '%'
-            where.append("(item_name LIKE ? ESCAPE '\\' OR sku LIKE ? ESCAPE '\\')")
-            params += [like, like]
+            where.append("(item_name LIKE ? ESCAPE '\\' OR sku LIKE ? ESCAPE '\\' OR item_ref LIKE ? ESCAPE '\\')")
+            params += [like, like, like]
         if active in ('0', '1'):
             where.append('active = ?')
             params.append(int(active))
         if status in STATUSES:
             where.append('status = ?')
             params.append(status)
-        cols = ['item_name', 'sku', 'physical_stock', 'committed_stock', 'available_stock', 'status', 'active', 'updated_at']
+        cols = ['item_name', 'sku', 'item_ref', 'physical_stock', 'committed_stock', 'available_stock', 'status', 'active', 'updated_at']
         col = sort_col if sort_col in cols else 'item_name'
-        collate = ' COLLATE NOCASE' if col in ('item_name', 'sku', 'status') else ''
+        collate = ' COLLATE NOCASE' if col in ('item_name', 'sku', 'item_ref', 'status') else ''
         direction = 'DESC' if sort_dir == 'desc' else 'ASC'
         sql = (f"SELECT * FROM v_item_check {'WHERE ' + ' AND '.join(where) if where else ''} "
                f"ORDER BY {col}{collate} {direction}, item_name COLLATE NOCASE")
@@ -445,13 +460,16 @@ class Store:
     def get(self, item_id):
         return self.conn.execute('SELECT * FROM items WHERE id = ?', (item_id,)).fetchone()
 
+    def get_check(self, item_id):
+        return self.conn.execute('SELECT * FROM v_item_check WHERE id = ?', (item_id,)).fetchone()
+
     def find_sku(self, sku, except_id=None):
         return self.conn.execute('SELECT id, item_name, sku FROM items WHERE sku = ? AND id IS NOT ?',
                                  (sku, except_id)).fetchone()
 
-    def save_item(self, item_id, name, sku, physical, committed, active):
+    def save_item(self, item_id, name, sku, item_ref, physical, committed, active):
         """Validate and insert (item_id None) or update. Raises ValueError with a user message."""
-        name, sku = (name or '').strip(), (sku or '').strip()
+        name, sku, item_ref = (name or '').strip(), (sku or '').strip(), (item_ref or '').strip()
         if not name:
             raise ValueError('Item Name is required.')
         if not sku:
@@ -465,11 +483,11 @@ class Store:
         if dup:
             raise ValueError(f'SKU "{dup["sku"]}" already exists ({dup["item_name"]}). SKUs are not case-sensitive.')
         if item_id is None:
-            self.conn.execute('INSERT INTO items (item_name, sku, physical_stock, committed_stock, active) VALUES (?,?,?,?,?)',
-                              (name, sku, physical, committed, int(bool(active))))
+            self.conn.execute('INSERT INTO items (item_name, sku, item_ref, physical_stock, committed_stock, active) '
+                              'VALUES (?,?,?,?,?,?)', (name, sku, item_ref, physical, committed, int(bool(active))))
         else:
-            self.conn.execute('UPDATE items SET item_name=?, sku=?, physical_stock=?, committed_stock=?, active=? WHERE id=?',
-                              (name, sku, physical, committed, int(bool(active)), item_id))
+            self.conn.execute('UPDATE items SET item_name=?, sku=?, item_ref=?, physical_stock=?, committed_stock=?, active=? '
+                              'WHERE id=?', (name, sku, item_ref, physical, committed, int(bool(active)), item_id))
 
     def toggle_active(self, item_id):
         self.conn.execute('UPDATE items SET active = 1 - active WHERE id = ?', (item_id,))
@@ -499,6 +517,8 @@ class Store:
             i = cols.get(field)
             return row[i] if i is not None and i < len(row) else None
 
+        # Files without an ItemRef column leave existing ItemRefs alone.
+        set_ref = 'item_ref = excluded.item_ref, ' if 'item_ref' in cols else ''
         added = updated = 0
         skipped = []
         self.conn.execute('BEGIN')
@@ -529,11 +549,11 @@ class Store:
                     skipped.append((row_no, sku, why))
                     continue
                 exists = self.find_sku(sku) is not None
-                self.conn.execute("""
-                    INSERT INTO items (item_name, sku, physical_stock, committed_stock, active) VALUES (?,?,?,?,?)
-                    ON CONFLICT(sku) DO UPDATE SET item_name = excluded.item_name,
+                self.conn.execute(f"""
+                    INSERT INTO items (item_name, sku, item_ref, physical_stock, committed_stock, active) VALUES (?,?,?,?,?,?)
+                    ON CONFLICT(sku) DO UPDATE SET item_name = excluded.item_name, {set_ref}
                       physical_stock = excluded.physical_stock, committed_stock = excluded.committed_stock,
-                      active = excluded.active""", (name, sku, phys, comm, active))
+                      active = excluded.active""", (name, sku, cell_text(get(row, 'item_ref')), phys, comm, active))
                 if exists:
                     updated += 1
                 else:
@@ -545,7 +565,7 @@ class Store:
         return added, updated, skipped
 
     def export_rows(self):
-        return self.conn.execute('SELECT item_name, sku, physical_stock, committed_stock, active FROM items '
+        return self.conn.execute('SELECT item_name, sku, item_ref, physical_stock, committed_stock, active FROM items '
                                  'ORDER BY item_name COLLATE NOCASE, sku').fetchall()
 
     def backup_to(self, path):
@@ -568,8 +588,8 @@ class Store:
                 src.backup(mem)
                 if not mem.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='items'").fetchone():
                     raise ValueError('This .db file does not contain an items table.')
-                mem.executescript(SCHEMA)
-                mem.execute('SELECT id, item_name, sku, status FROM v_item_check LIMIT 1').fetchall()
+                ensure_schema(mem)
+                mem.execute('SELECT id, item_name, sku, item_ref, status FROM v_item_check LIMIT 1').fetchall()
             except sqlite3.DatabaseError as ex:
                 raise ValueError(f'This file is not a valid Item Checker database ({ex}).')
             mem.execute('PRAGMA user_version = 0')
@@ -600,7 +620,7 @@ def style_header(ws):
     for c in ws[1]:
         c.font = Font(bold=True, color='FFFFFF')
         c.fill = fill
-    for col, w in zip('ABCDE', (34, 16, 18, 16, 9)):
+    for col, w in zip('ABCDEF', (34, 16, 16, 18, 16, 9)):
         ws.column_dimensions[col].width = w
     ws.freeze_panes = 'A2'
 
@@ -611,7 +631,7 @@ def write_xlsx(path, rows):
     ws.title = 'Items'
     ws.append(HEADERS)
     for r in rows:
-        ws.append([r['item_name'], r['sku'], r['physical_stock'], r['committed_stock'], bool(r['active'])])
+        ws.append([r['item_name'], r['sku'], r['item_ref'], r['physical_stock'], r['committed_stock'], bool(r['active'])])
     style_header(ws)
     wb.save(path)
 
@@ -634,14 +654,15 @@ def write_template(path):
         ['How to fill the Items sheet'],
         ['Item Name and SKU are required.'],
         ['SKU must be unique. It is not case-sensitive (HC-001 = hc-001). An existing SKU is updated on import.'],
+        ['ItemRef is optional. If the file has no ItemRef column, existing ItemRefs are kept.'],
         ['Physical Stock QTY and Committed Stock: whole numbers, 0 or more. Blank = 0. Commas are fine (1,200).'],
         ['Active: TRUE/FALSE, YES/NO, 1/0, or Active/Inactive. Blank = TRUE.'],
         [],
         ['Example'],
         HEADERS,
-        ['Nordic Dining Chair', 'HC-CHR-001', 120, 30, 'TRUE'],
-        ['Oak Coffee Table', 'HC-TBL-014', 15, 18, 'TRUE'],
-        ['Rattan Floor Lamp', 'HC-LMP-077', 0, 0, 'FALSE'],
+        ['Nordic Dining Chair', 'HC-CHR-001', 'REF-1001', 120, 30, 'TRUE'],
+        ['Oak Coffee Table', 'HC-TBL-014', 'REF-1002', 15, 18, 'TRUE'],
+        ['Rattan Floor Lamp', 'HC-LMP-077', '', 0, 0, 'FALSE'],
     ]:
         help_ws.append(line)
     help_ws['A1'].font = Font(bold=True, size=12)
@@ -652,7 +673,6 @@ def write_template(path):
 # ---------------------------------------------------------------- UI
 
 TEAL, TEAL_DARK, BG, CARD, MUTED, RED = '#0f766e', '#115e59', '#f1f5f9', '#ffffff', '#64748b', '#dc2626'
-ROW_COLORS = {'OVER-COMMITTED': '#fee2e2', 'NO STOCK': '#e2e8f0', 'LOW': '#fef3c7', 'OK': '#ffffff'}
 FONT = ('Segoe UI', 10)
 
 
@@ -660,10 +680,136 @@ def today():
     return datetime.date.today().isoformat()
 
 
-class ItemDialog(tk.Toplevel):
-    def __init__(self, app, item=None):
+def flow(frame, widgets, gap=6):
+    """Lay widgets out left to right, wrapping onto a new row when the frame gets too narrow."""
+    def relayout(e=None):
+        width = frame.winfo_width()
+        if width <= 1:
+            return
+        x = y = row_h = 0
+        for w in widgets:
+            ww, wh = w.winfo_reqwidth(), w.winfo_reqheight()
+            if x and x + ww > width:
+                x, y, row_h = 0, y + row_h + gap, 0
+            w.place(x=x, y=y)
+            x += ww + gap
+            row_h = max(row_h, wh)
+        if int(frame.cget('height')) != y + row_h:
+            frame.configure(height=y + row_h)
+    frame.bind('<Configure>', relayout, add='+')
+    for w in widgets:  # e.g. a label whose text got longer
+        w.bind('<Configure>', relayout, add='+')
+    frame.after_idle(relayout)
+
+
+class ItemCard(tk.Toplevel):
+    """Every field of one item, with Edit / Mark active / Delete. Opened from the item list."""
+
+    def __init__(self, app, item_id):
         super().__init__(app)
-        self.app, self.item = app, item
+        self.app, self.item_id = app, item_id
+        self.title('Item')
+        self.configure(bg=CARD, padx=18, pady=14)
+        self.transient(app)
+        self.minsize(320, 0)
+        self.columnconfigure(0, weight=1)
+
+        self.l_name = tk.Label(self, bg=CARD, fg='#0f172a', font=('Segoe UI Semibold', 13), anchor='w', justify='left')
+        self.l_name.grid(row=0, column=0, sticky='we')
+        ttk.Separator(self).grid(row=1, column=0, sticky='we', pady=(10, 4))
+
+        def field(title, row, font):
+            tk.Label(self, text=title.upper(), bg=CARD, fg=MUTED, font=('Segoe UI Semibold', 8)).grid(
+                row=row, column=0, sticky='w', pady=(8, 0))
+            v = tk.Label(self, bg=CARD, fg='#0f172a', font=font, anchor='w', justify='left')
+            v.grid(row=row + 1, column=0, sticky='we')
+            return v
+
+        self.l_sku = field('SKU', 2, ('Consolas', 11))
+        self.l_ref = field('ItemRef', 4, FONT)
+
+        stats = tk.Frame(self, bg=CARD)
+        stats.grid(row=6, column=0, sticky='we', pady=(12, 0))
+        self.stat = {}
+        for i, (key, title) in enumerate((('physical_stock', 'Physical Stock'), ('committed_stock', 'Committed Stock'),
+                                          ('available_stock', 'Available'))):
+            stats.columnconfigure(i, weight=1, uniform='s')
+            box = tk.Frame(stats, bg=BG, padx=10, pady=8)
+            box.grid(row=0, column=i, sticky='nsew', padx=(0 if i == 0 else 6, 0))
+            tk.Label(box, text=title, bg=BG, fg=MUTED, font=('Segoe UI', 9)).pack(anchor='w')
+            self.stat[key] = tk.Label(box, bg=BG, font=('Segoe UI Semibold', 16))
+            self.stat[key].pack(anchor='w')
+
+        act = tk.Frame(self, bg=BG, padx=10, pady=6)
+        act.grid(row=7, column=0, sticky='we', pady=(8, 0))
+        tk.Label(act, text='Active', bg=BG, font=('Segoe UI Semibold', 10)).pack(side='left')
+        self.b_toggle = ttk.Button(act, command=self.toggle)
+        self.b_toggle.pack(side='right')
+        self.l_active = tk.Label(act, bg=BG)
+        self.l_active.pack(side='right', padx=(0, 8))
+
+        btns = tk.Frame(self, bg=CARD)
+        btns.grid(row=8, column=0, sticky='we', pady=(14, 0))
+        ttk.Button(btns, text='Delete', command=self.delete).pack(side='left')
+        ttk.Button(btns, text='Edit', style='Accent.TButton', command=self.edit).pack(side='right')
+        ttk.Button(btns, text='Close', command=self.destroy).pack(side='right', padx=(0, 6))
+
+        self.bind('<Escape>', lambda e: self.destroy())
+        self.bind('<Configure>', self.rewrap)
+        if not self.fill():
+            return
+        self.update_idletasks()
+        w = max(self.winfo_reqwidth(), 420)
+        x = app.winfo_rootx() + (app.winfo_width() - w) // 2
+        y = app.winfo_rooty() + (app.winfo_height() - self.winfo_reqheight()) // 3
+        self.geometry(f'{w}x{self.winfo_reqheight()}+{max(x, 0)}+{max(y, 0)}')
+        self.grab_set()
+        self.focus_set()
+
+    def rewrap(self, e=None):
+        width = max(self.winfo_width() - 40, 200)
+        for lbl in (self.l_name, self.l_sku, self.l_ref):
+            lbl.configure(wraplength=width)
+
+    def fill(self):
+        r = self.app.store.get_check(self.item_id)
+        if not r:
+            self.destroy()
+            return False
+        self.l_name.config(text=r['item_name'])
+        self.l_sku.config(text=r['sku'])
+        self.l_ref.config(text=r['item_ref'] or '—')
+        for key, lbl in self.stat.items():
+            lbl.config(text=f'{r[key]:,}', fg=RED if r[key] < 0 else '#0f172a')
+        self.l_active.config(text='Yes' if r['active'] else 'No', fg=TEAL if r['active'] else MUTED)
+        self.b_toggle.config(text='Mark inactive' if r['active'] else 'Mark active')
+        return True
+
+    def toggle(self):
+        self.app.store.toggle_active(self.item_id)
+        self.app.saved()
+        self.fill()
+
+    def edit(self):
+        item = self.app.store.get(self.item_id)
+        self.destroy()
+        if item:
+            ItemDialog(self.app, item, reopen_card=True)
+
+    def delete(self):
+        r = self.app.store.get(self.item_id)
+        if r and messagebox.askyesno('Delete item?', f'{r["item_name"]} ({r["sku"]}) will be permanently removed.',
+                                     icon='warning', parent=self):
+            self.destroy()
+            self.app.store.delete(self.item_id)
+            self.app.saved()
+            self.app.set_status(f'Deleted {r["sku"]}')
+
+
+class ItemDialog(tk.Toplevel):
+    def __init__(self, app, item=None, reopen_card=False):
+        super().__init__(app)
+        self.app, self.item, self.reopen_card = app, item, reopen_card
         self.title('Edit Item' if item else 'Add Item')
         self.configure(bg=CARD, padx=18, pady=14)
         self.resizable(False, False)
@@ -671,6 +817,7 @@ class ItemDialog(tk.Toplevel):
 
         self.v_name = tk.StringVar(value=item['item_name'] if item else '')
         self.v_sku = tk.StringVar(value=item['sku'] if item else '')
+        self.v_ref = tk.StringVar(value=item['item_ref'] if item else '')
         self.v_phys = tk.StringVar(value=str(item['physical_stock']) if item else '0')
         self.v_comm = tk.StringVar(value=str(item['committed_stock']) if item else '0')
         self.v_active = tk.BooleanVar(value=bool(item['active']) if item else True)
@@ -683,17 +830,19 @@ class ItemDialog(tk.Toplevel):
         e_name.grid(row=1, column=0, columnspan=2, sticky='we')
         label('SKU *', 2)
         ttk.Entry(self, textvariable=self.v_sku, width=44, font=('Consolas', 10)).grid(row=3, column=0, columnspan=2, sticky='we')
-        label('Physical Stock QTY', 4, 0)
-        label('Committed Stock', 4, 1)
-        ttk.Spinbox(self, from_=0, to=10**9, textvariable=self.v_phys, width=18, font=FONT).grid(row=5, column=0, sticky='w', padx=(0, 8))
-        ttk.Spinbox(self, from_=0, to=10**9, textvariable=self.v_comm, width=18, font=FONT).grid(row=5, column=1, sticky='w')
-        ttk.Checkbutton(self, text='Active', variable=self.v_active).grid(row=6, column=0, sticky='w', pady=(10, 0))
+        label('ItemRef', 4)
+        ttk.Entry(self, textvariable=self.v_ref, width=44, font=FONT).grid(row=5, column=0, columnspan=2, sticky='we')
+        label('Physical Stock QTY', 6, 0)
+        label('Committed Stock', 6, 1)
+        ttk.Spinbox(self, from_=0, to=10**9, textvariable=self.v_phys, width=18, font=FONT).grid(row=7, column=0, sticky='w', padx=(0, 8))
+        ttk.Spinbox(self, from_=0, to=10**9, textvariable=self.v_comm, width=18, font=FONT).grid(row=7, column=1, sticky='w')
+        ttk.Checkbutton(self, text='Active', variable=self.v_active).grid(row=8, column=0, sticky='w', pady=(10, 0))
 
         self.preview = tk.Label(self, bg=CARD, fg=MUTED, font=FONT, anchor='w')
-        self.preview.grid(row=7, column=0, columnspan=2, sticky='we', pady=(8, 0))
+        self.preview.grid(row=9, column=0, columnspan=2, sticky='we', pady=(8, 0))
         self.error = tk.Label(self, bg='#fef2f2', fg='#b91c1c', font=FONT, anchor='w', justify='left', wraplength=380)
         btns = tk.Frame(self, bg=CARD)
-        btns.grid(row=9, column=0, columnspan=2, sticky='e', pady=(14, 0))
+        btns.grid(row=11, column=0, columnspan=2, sticky='e', pady=(14, 0))
         ttk.Button(btns, text='Cancel', command=self.destroy).pack(side='right')
         ttk.Button(btns, text='Save', style='Accent.TButton', command=self.save).pack(side='right', padx=(0, 6))
 
@@ -720,15 +869,17 @@ class ItemDialog(tk.Toplevel):
     def save(self):
         try:
             self.app.store.save_item(self.item['id'] if self.item else None, self.v_name.get(), self.v_sku.get(),
-                                     parse_qty(self.v_phys.get()), parse_qty(self.v_comm.get()), self.v_active.get())
+                                     self.v_ref.get(), parse_qty(self.v_phys.get()), parse_qty(self.v_comm.get()), self.v_active.get())
         except ValueError as ex:
             self.error.config(text=str(ex), padx=8, pady=6)
-            self.error.grid(row=8, column=0, columnspan=2, sticky='we', pady=(8, 0))
+            self.error.grid(row=10, column=0, columnspan=2, sticky='we', pady=(8, 0))
             return
         sku = self.v_sku.get().strip()
         self.destroy()
         self.app.saved()
         self.app.set_status(f'{"Updated" if self.item else "Added"} {sku}')
+        if self.reopen_card:
+            ItemCard(self.app, self.item['id'])
 
 
 class LoginDialog(tk.Toplevel):
@@ -817,7 +968,7 @@ class App(tk.Tk):
         super().__init__()
         self.title('Item Checker')
         self.geometry('1180x720')
-        self.minsize(900, 560)
+        self.minsize(380, 480)
         self.configure(bg=BG)
         self.cloud = Cloud(SUPABASE_URL, SUPABASE_ANON_KEY, SESSION_PATH) if SUPABASE_URL and SUPABASE_ANON_KEY else None
         self.store = Store(CACHE_PATH if self.cloud else db_path, seed=self.cloud is None)
@@ -963,7 +1114,8 @@ class App(tk.Tk):
         m.add_cascade(label='File', menu=f)
         it = tk.Menu(m, tearoff=0)
         it.add_command(label='Add Item', accelerator='Ctrl+N', command=self.add_item)
-        it.add_command(label='Edit Item', accelerator='Enter', command=self.edit_item)
+        it.add_command(label='View Item', accelerator='Enter', command=self.open_item)
+        it.add_command(label='Edit Item', accelerator='Ctrl+E', command=self.edit_item)
         it.add_command(label='Toggle Active', accelerator='Space', command=self.toggle_item)
         it.add_command(label='Delete Item', accelerator='Del', command=self.delete_item)
         it.add_separator()
@@ -973,14 +1125,14 @@ class App(tk.Tk):
         self.row_menu = it
 
     def build_header(self):
-        h = self.header = tk.Frame(self, bg=TEAL, padx=16, pady=10)
+        h = self.header = tk.Frame(self, bg=TEAL)
         h.pack(fill='x')
         left = tk.Frame(h, bg=TEAL)
-        left.pack(side='left')
         tk.Label(left, text='Item Checker', bg=TEAL, fg='white', font=('Segoe UI Semibold', 16)).pack(anchor='w')
         tk.Label(left, text='Physical vs Committed stock · SQLite', bg=TEAL, fg='#ccfbf1', font=('Segoe UI', 9)).pack(anchor='w')
-        ttk.Button(h, text='+ Add Item', style='Accent.TButton', command=self.add_item).pack(side='right', padx=(6, 0))
-        exp = ttk.Menubutton(h, text='Export')
+        right = tk.Frame(h, bg=TEAL)
+        ttk.Button(right, text='+ Add Item', style='Accent.TButton', command=self.add_item).pack(side='right', padx=(6, 0))
+        exp = ttk.Menubutton(right, text='Export')
         em = tk.Menu(exp, tearoff=0)
         em.add_command(label='Excel (.xlsx)', command=lambda: self.do_export('xlsx'))
         em.add_command(label='CSV (.csv)', command=lambda: self.do_export('csv'))
@@ -988,9 +1140,25 @@ class App(tk.Tk):
         em.add_command(label='SQLite backup (.db)', command=lambda: self.do_export('db'))
         exp['menu'] = em
         exp.pack(side='right', padx=(6, 0))
-        ttk.Button(h, text='Import', command=self.do_import).pack(side='right')
+        ttk.Button(right, text='Import', command=self.do_import).pack(side='right')
         if self.cloud:
-            ttk.Button(h, text='Open in Browser', command=self.open_web).pack(side='right', padx=(0, 6))
+            ttk.Button(right, text='Open in Browser', command=self.open_web).pack(side='right', padx=(0, 6))
+
+        # Title on the left and buttons on the right; on a narrow window the buttons move under the title.
+        def relayout(e=None):
+            lw, lh = left.winfo_reqwidth(), left.winfo_reqheight()
+            rw, rh = right.winfo_reqwidth(), right.winfo_reqheight()
+            left.place(x=16, y=10)
+            if h.winfo_width() - 32 >= lw + rw + 16:
+                right.place(relx=1, x=-16, y=10 + (lh - rh) // 2, anchor='ne')
+                height = 20 + max(lh, rh)
+            else:
+                right.place(relx=0, x=16, y=18 + lh, anchor='nw')
+                height = 28 + lh + rh
+            if int(h.cget('height')) != height:
+                h.configure(height=height)
+        h.bind('<Configure>', relayout)
+        h.after_idle(relayout)
 
     def build_banner(self):
         self.banner = tk.Frame(self, bg='#fffbeb', highlightbackground='#fcd34d', highlightthickness=1, padx=12, pady=8)
@@ -1010,9 +1178,9 @@ class App(tk.Tk):
         self.build_items_tab()
         self.build_sql_tab()
 
-    def stat_card(self, parent, col, title, color=None, on_click=None):
+    def stat_card(self, parent, title, color=None, on_click=None):
+        """Builds a card (placed later by the reflow in build_items_tab) and returns its value label."""
         card = tk.Frame(parent, bg=CARD, highlightbackground='#e2e8f0', highlightthickness=1, padx=14, pady=10)
-        card.grid(row=0, column=col, sticky='nsew', padx=(0 if col == 0 else 8, 0))
         t = tk.Label(card, text=title.upper(), bg=CARD, fg=color or MUTED, font=('Segoe UI Semibold', 8))
         t.pack(anchor='w')
         v = tk.Label(card, text='0', bg=CARD, fg=color or '#0f172a', font=('Segoe UI Semibold', 18))
@@ -1025,55 +1193,68 @@ class App(tk.Tk):
 
     def build_items_tab(self):
         t = self.tab_items
+        # Stat cards: 5 across on a wide window, 3 or 2 across on a narrow one.
         cards = tk.Frame(t, bg=BG)
         cards.pack(fill='x')
-        for i in range(5):
-            cards.columnconfigure(i, weight=1, uniform='c')
-        self.s_total = self.stat_card(cards, 0, 'Total Items', on_click=lambda: self.quick_filter('all', 'all'))
-        self.s_active = self.stat_card(cards, 1, 'Active', on_click=lambda: self.quick_filter('1', 'all'))
-        self.s_phys = self.stat_card(cards, 2, 'Physical QTY')
-        self.s_comm = self.stat_card(cards, 3, 'Committed QTY')
-        self.s_over = self.stat_card(cards, 4, 'Over-committed', RED, on_click=lambda: self.quick_filter('all', 'OVER-COMMITTED'))
+        self.s_total = self.stat_card(cards, 'Total Items', on_click=lambda: self.quick_filter('all', 'all'))
+        self.s_active = self.stat_card(cards, 'Active', on_click=lambda: self.quick_filter('1', 'all'))
+        self.s_phys = self.stat_card(cards, 'Physical QTY')
+        self.s_comm = self.stat_card(cards, 'Committed QTY')
+        self.s_over = self.stat_card(cards, 'Over-committed', RED, on_click=lambda: self.quick_filter('all', 'OVER-COMMITTED'))
+        card_frames = [v.master for v in (self.s_total, self.s_active, self.s_phys, self.s_comm, self.s_over)]
+        self._card_cols = None
 
-        bar = tk.Frame(t, bg=BG, pady=10)
-        bar.pack(fill='x')
-        tk.Label(bar, text='Search', bg=BG, fg=MUTED).pack(side='left')
+        def reflow_cards(e):
+            n = 5 if e.width >= 760 else 3 if e.width >= 480 else 2
+            if n == self._card_cols:
+                return
+            self._card_cols = n
+            for i in range(5):
+                cards.columnconfigure(i, weight=1 if i < n else 0, uniform='c' if i < n else '')
+            for i, c in enumerate(card_frames):
+                row, col = divmod(i, n)
+                c.grid(row=row, column=col, sticky='nsew', padx=(0 if col == 0 else 8, 0), pady=(0 if row == 0 else 8, 0))
+        cards.bind('<Configure>', reflow_cards)
+
+        bar = tk.Frame(t, bg=BG)
+        bar.pack(fill='x', pady=10)
+        search = tk.Frame(bar, bg=BG)
+        tk.Label(search, text='Search', bg=BG, fg=MUTED).pack(side='left')
         self.v_search = tk.StringVar()
-        self.e_search = ttk.Entry(bar, textvariable=self.v_search, width=34)
-        self.e_search.pack(side='left', padx=(6, 12))
+        self.e_search = ttk.Entry(search, textvariable=self.v_search, width=30)
+        self.e_search.pack(side='left', padx=(6, 0))
         self.v_search.trace_add('write', lambda *_: self.refresh())
         self.active_opts = {'All items': 'all', 'Active only': '1', 'Inactive only': '0'}
         self.v_active = tk.StringVar(value='All items')
         cb = ttk.Combobox(bar, textvariable=self.v_active, values=list(self.active_opts), state='readonly', width=14)
-        cb.pack(side='left')
         cb.bind('<<ComboboxSelected>>', lambda e: self.refresh())
         self.v_statusf = tk.StringVar(value='All statuses')
         cb2 = ttk.Combobox(bar, textvariable=self.v_statusf, values=['All statuses'] + STATUSES, state='readonly', width=18)
-        cb2.pack(side='left', padx=(8, 0))
         cb2.bind('<<ComboboxSelected>>', lambda e: self.refresh())
-        ttk.Button(bar, text='Reset', command=lambda: self.quick_filter('all', 'all')).pack(side='left', padx=(8, 0))
+        reset = ttk.Button(bar, text='Reset', command=lambda: self.quick_filter('all', 'all'))
         self.l_count = tk.Label(bar, bg=BG, fg=MUTED)
-        self.l_count.pack(side='right')
+        flow(bar, [search, cb, cb2, reset, self.l_count], gap=8)
 
+        # The list shows Item Name, SKU and ItemRef only; opening an item shows its card with every field.
         table = tk.Frame(t, bg=BG)
         table.pack(fill='both', expand=True)
-        self.cols = [('item_name', 'Item Name', 260, 'w'), ('sku', 'SKU', 130, 'w'),
-                     ('physical_stock', 'Physical', 90, 'e'), ('committed_stock', 'Committed', 95, 'e'),
-                     ('available_stock', 'Available', 90, 'e'), ('status', 'Status', 140, 'w'),
-                     ('active', 'Active', 70, 'center'), ('updated_at', 'Updated', 150, 'w')]
+        self.cols = [('item_name', 'Item Name', 0.5), ('sku', 'SKU', 0.25), ('item_ref', 'ItemRef', 0.25)]
         self.tree = ttk.Treeview(table, columns=[c[0] for c in self.cols], show='headings', selectmode='browse')
-        for key, title, width, anchor in self.cols:
-            self.tree.heading(key, text=title, anchor=anchor, command=lambda k=key: self.sort_by(k))
-            self.tree.column(key, width=width, anchor=anchor, stretch=key == 'item_name')
-        for st, color in ROW_COLORS.items():
-            self.tree.tag_configure(st, background=color)
+        for key, title, _ in self.cols:
+            self.tree.heading(key, text=title, anchor='w', command=lambda k=key: self.sort_by(k))
+            self.tree.column(key, width=100, minwidth=60, anchor='w', stretch=True)
         self.tree.tag_configure('inactive', foreground='#94a3b8')
         sb = ttk.Scrollbar(table, command=self.tree.yview)
         self.tree.configure(yscrollcommand=sb.set)
         self.tree.pack(side='left', fill='both', expand=True)
         sb.pack(side='right', fill='y')
-        self.tree.bind('<Double-1>', lambda e: self.edit_item() if self.tree.identify_row(e.y) else None)
-        self.tree.bind('<Return>', lambda e: self.edit_item())
+
+        def fit_columns(e):
+            for key, _, share in self.cols:
+                self.tree.column(key, width=max(int(e.width * share), 60))
+        self.tree.bind('<Configure>', fit_columns)
+        self.tree.bind('<Double-1>', lambda e: self.open_item() if self.tree.identify_row(e.y) else None)
+        self.tree.bind('<Return>', lambda e: self.open_item())
         self.tree.bind('<space>', lambda e: self.toggle_item())
         self.tree.bind('<Delete>', lambda e: self.delete_item())
         self.tree.bind('<Button-3>', self.on_right_click)
@@ -1081,20 +1262,15 @@ class App(tk.Tk):
 
         self.empty = tk.Label(self.tree, bg=CARD, fg=MUTED)
 
-        actions = tk.Frame(t, bg=BG, pady=8)
-        actions.pack(fill='x')
+        actions = tk.Frame(t, bg=BG)
+        actions.pack(side='bottom', fill='x', pady=(8, 0), before=table)  # keeps the buttons visible on a short window
+        self.b_open = ttk.Button(actions, text='View', style='Accent.TButton', command=self.open_item)
         self.b_edit = ttk.Button(actions, text='Edit', command=self.edit_item)
         self.b_toggle = ttk.Button(actions, text='Toggle Active', command=self.toggle_item)
         self.b_delete = ttk.Button(actions, text='Delete', command=self.delete_item)
-        for b in (self.b_edit, self.b_toggle, self.b_delete):
-            b.pack(side='left', padx=(0, 6))
-        tk.Label(actions, text='Tip: double-click a row to edit · Space toggles Active · Del deletes',
-                 bg=BG, fg=MUTED, font=('Segoe UI', 9)).pack(side='left', padx=(10, 0))
-        legend = tk.Frame(actions, bg=BG)
-        legend.pack(side='right')
-        for st in STATUSES:
-            tk.Label(legend, text=f' {st} ', bg=ROW_COLORS[st], fg='#334155', font=('Segoe UI', 8),
-                     highlightbackground='#cbd5e1', highlightthickness=1).pack(side='left', padx=2)
+        tip = tk.Label(actions, text='Tip: double-click an item to view it · Space toggles Active · Del deletes',
+                       bg=BG, fg=MUTED, font=('Segoe UI', 9))
+        flow(actions, [self.b_open, self.b_edit, self.b_toggle, self.b_delete, tip])
 
     def build_sql_tab(self):
         t = self.tab_sql
@@ -1137,6 +1313,7 @@ class App(tk.Tk):
 
     def bind_keys(self):
         self.bind('<Control-n>', lambda e: self.add_item())
+        self.bind('<Control-e>', lambda e: self.edit_item())
         self.bind('<Control-i>', lambda e: self.do_import())
         self.bind('<Control-f>', lambda e: (self.nb.select(self.tab_items), self.e_search.focus_set()))
         self.bind('<F5>', lambda e: self.refresh())
@@ -1151,7 +1328,7 @@ class App(tk.Tk):
 
     def update_buttons(self):
         state = 'normal' if self.selected_id() else 'disabled'
-        for b in (self.b_edit, self.b_toggle, self.b_delete):
+        for b in (self.b_open, self.b_edit, self.b_toggle, self.b_delete):
             b.configure(state=state)
 
     def quick_filter(self, active, status):
@@ -1183,16 +1360,14 @@ class App(tk.Tk):
         keep = self.selected_id()
         self.tree.delete(*self.tree.get_children())
         for r in rows:
-            tags = [r['status']] + ([] if r['active'] else ['inactive'])
-            self.tree.insert('', 'end', iid=str(r['id']), tags=tags, values=(
-                r['item_name'], r['sku'], f'{r["physical_stock"]:,}', f'{r["committed_stock"]:,}',
-                f'{r["available_stock"]:,}', r['status'], 'Yes' if r['active'] else 'No', r['updated_at']))
+            self.tree.insert('', 'end', iid=str(r['id']), tags=() if r['active'] else ('inactive',),
+                             values=(r['item_name'], r['sku'], r['item_ref'] or '—'))
         if keep and self.tree.exists(str(keep)):
             self.tree.selection_set(str(keep))
             self.tree.see(str(keep))
         self.l_count.config(text=f'Showing {len(rows):,} of {t["total"]:,}')
 
-        for key, title, _, anchor in self.cols:
+        for key, title, _ in self.cols:
             arrow = (' ▲' if self.sort_dir == 'asc' else ' ▼') if key == self.sort_col else ''
             self.tree.heading(key, text=title + arrow)
 
@@ -1212,6 +1387,11 @@ class App(tk.Tk):
     # ---------- item actions ----------
     def add_item(self):
         ItemDialog(self)
+
+    def open_item(self):
+        item_id = self.selected_id()
+        if item_id:
+            ItemCard(self, item_id)
 
     def edit_item(self):
         item_id = self.selected_id()
@@ -1301,7 +1481,7 @@ class App(tk.Tk):
                     if kind == 'xlsx':
                         write_xlsx(path, rows)
                     else:
-                        write_csv(path, HEADERS, [(r['item_name'], r['sku'], r['physical_stock'], r['committed_stock'],
+                        write_csv(path, HEADERS, [(r['item_name'], r['sku'], r['item_ref'], r['physical_stock'], r['committed_stock'],
                                                    'TRUE' if r['active'] else 'FALSE') for r in rows])
         except Exception as ex:
             messagebox.showerror('Export failed', str(ex), parent=self)

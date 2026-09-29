@@ -13,6 +13,18 @@ Rules are checked in order:
 | LOW | available (physical − committed) ≤ 5 |
 | OK | everything else |
 
+## Item fields
+
+Item Name, SKU, ItemRef (optional), Physical Stock QTY, Committed Stock, Active. SKUs are unique and not case-sensitive.
+
+## Using the list
+
+- The list shows only **Item Name, SKU and ItemRef**. Search matches all three.
+- Open an item to see its card: Item Name, SKU, ItemRef, Physical Stock, Committed Stock, Available and Active, with Edit, Mark active/inactive and Delete.
+  - **Desktop:** double-click the item, or select it and press Enter or **View**.
+  - **Web / phone:** tap the item. On a phone, add items with the round **+** button.
+- Both apps adjust to the screen size: the web page fits phones, and the desktop window can be made as narrow as 380 px.
+
 ## Files
 
 - `ItemChecker.pyw`: the desktop app (Python + Tkinter)
@@ -20,6 +32,7 @@ Rules are checked in order:
 - `supabase_setup.sql`: tables and access rules for the shared online list
 - `schema.sql`: SQLite schema (table, `updated_at` trigger, `v_item_check` view)
 - `Item_Checker_Project_Plan.pdf`: project plan
+- `HISTORY.md`: list of changes
 
 ## Running
 
@@ -49,6 +62,12 @@ When `SUPABASE_URL` and `SUPABASE_ANON_KEY` are filled in, at the top of `ItemCh
 4. In **Authentication → Users → Add user → Create new user**, add each person with an email and password. Tick **Auto Confirm User**.
 5. In **Project Settings → API**, copy the **Project URL** and the **anon public** key into both files.
 6. In the GitHub repo, go to **Settings → Pages**, set the source to **Deploy from a branch → main → / (root)**, and save.
+
+**Upgrading a project made before ItemRef existed:** run `supabase_setup.sql` again, or just this line. The column must be named exactly `item_ref`:
+
+```sql
+alter table public.items add column if not exists item_ref text not null default '';
+```
 
 The anon key is meant to be public. The row-level security rules in `supabase_setup.sql` only let signed-in users read or change items.
 

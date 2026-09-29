@@ -14,6 +14,9 @@ create table if not exists public.items (
   updated_at      timestamptz not null default now()
 );
 
+-- ItemRef (added later; this line upgrades a table made before it existed)
+alter table public.items add column if not exists item_ref text not null default '';
+
 -- SKUs are unique and not case-sensitive (HC-001 = hc-001)
 create unique index if not exists items_sku_nocase on public.items (lower(sku));
 

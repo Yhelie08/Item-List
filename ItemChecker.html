@@ -15,6 +15,9 @@
   th.sortable { cursor: pointer; user-select: none; }
   th.sortable:hover { color: #0f766e; }
   textarea.sql { font-family: ui-monospace, Consolas, "Courier New", monospace; tab-size: 2; }
+  /* 16px inputs stop phones from zooming in when a field is tapped */
+  @media (max-width: 639px) { input, select, textarea { font-size: 16px !important; } }
+  #fabAdd { bottom: calc(1.25rem + env(safe-area-inset-bottom)); }
 </style>
 </head>
 <body class="bg-slate-100 text-slate-800 min-h-screen">
@@ -48,12 +51,12 @@
         <button data-export="db" class="block w-full border-t border-slate-100 px-4 py-2 text-left hover:bg-slate-100">SQLite backup (.db)</button>
       </div>
     </div>
-    <button id="btnAdd" class="rounded-lg bg-white px-3 py-2 text-sm font-semibold text-teal-800 hover:bg-teal-50">+ Add Item</button>
+    <button id="btnAdd" class="hidden rounded-lg bg-white px-3 py-2 sm:block text-sm font-semibold text-teal-800 hover:bg-teal-50">+ Add Item</button>
     <button id="btnSignOut" class="hidden rounded-lg px-3 py-2 text-sm font-medium text-teal-50 hover:bg-white/10">Sign out</button>
   </div>
 </header>
 
-<main class="mx-auto max-w-7xl px-4 py-5">
+<main class="mx-auto max-w-7xl px-4 pb-24 pt-5 sm:pb-5">
 
   <!-- Sample data banner -->
   <div id="sampleBanner" class="mb-4 hidden flex-wrap items-center gap-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
@@ -65,32 +68,32 @@
   <!-- ITEMS TAB -->
   <section id="tab-items">
     <!-- Stat cards -->
-    <div class="mb-4 grid grid-cols-2 gap-3 md:grid-cols-5">
-      <button data-card="all" class="stat-card rounded-xl bg-white p-4 text-left shadow-sm ring-1 ring-slate-200 hover:ring-teal-400">
+    <div class="mb-4 grid grid-cols-2 gap-2 sm:gap-3 md:grid-cols-5">
+      <button data-card="all" class="stat-card rounded-xl bg-white p-3 sm:p-4 text-left shadow-sm ring-1 ring-slate-200 hover:ring-teal-400">
         <div class="text-xs font-medium uppercase tracking-wide text-slate-500">Total Items</div>
-        <div id="statTotal" class="num mt-1 text-2xl font-bold">0</div>
+        <div id="statTotal" class="num mt-1 text-xl font-bold sm:text-2xl">0</div>
       </button>
-      <button data-card="active" class="stat-card rounded-xl bg-white p-4 text-left shadow-sm ring-1 ring-slate-200 hover:ring-teal-400">
+      <button data-card="active" class="stat-card rounded-xl bg-white p-3 sm:p-4 text-left shadow-sm ring-1 ring-slate-200 hover:ring-teal-400">
         <div class="text-xs font-medium uppercase tracking-wide text-slate-500">Active</div>
-        <div id="statActive" class="num mt-1 text-2xl font-bold">0</div>
+        <div id="statActive" class="num mt-1 text-xl font-bold sm:text-2xl">0</div>
       </button>
-      <div class="rounded-xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
+      <div class="rounded-xl bg-white p-3 sm:p-4 shadow-sm ring-1 ring-slate-200">
         <div class="text-xs font-medium uppercase tracking-wide text-slate-500">Physical QTY</div>
-        <div id="statPhysical" class="num mt-1 text-2xl font-bold">0</div>
+        <div id="statPhysical" class="num mt-1 text-xl font-bold sm:text-2xl">0</div>
       </div>
-      <div class="rounded-xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
+      <div class="rounded-xl bg-white p-3 sm:p-4 shadow-sm ring-1 ring-slate-200">
         <div class="text-xs font-medium uppercase tracking-wide text-slate-500">Committed QTY</div>
-        <div id="statCommitted" class="num mt-1 text-2xl font-bold">0</div>
+        <div id="statCommitted" class="num mt-1 text-xl font-bold sm:text-2xl">0</div>
       </div>
-      <button data-card="over" class="stat-card col-span-2 rounded-xl bg-white p-4 text-left shadow-sm ring-1 ring-slate-200 hover:ring-red-400 md:col-span-1">
+      <button data-card="over" class="stat-card col-span-2 rounded-xl bg-white p-3 sm:p-4 text-left shadow-sm ring-1 ring-slate-200 hover:ring-red-400 md:col-span-1">
         <div class="text-xs font-medium uppercase tracking-wide text-red-600">Over-committed</div>
-        <div id="statOver" class="num mt-1 text-2xl font-bold text-red-600">0</div>
+        <div id="statOver" class="num mt-1 text-xl font-bold sm:text-2xl text-red-600">0</div>
       </button>
     </div>
 
     <!-- Filter bar -->
     <div class="mb-3 flex flex-wrap items-center gap-2 rounded-xl bg-white p-3 shadow-sm ring-1 ring-slate-200">
-      <input id="fSearch" type="search" placeholder="Search Item Name or SKU…" class="min-w-[220px] flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500">
+      <input id="fSearch" type="search" placeholder="Search Item Name, SKU or ItemRef…" class="basis-full sm:basis-auto sm:min-w-[220px] sm:flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500">
       <select id="fActive" class="rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none">
         <option value="all">All items</option>
         <option value="1">Active only</option>
@@ -107,31 +110,26 @@
       <span id="rowCount" class="ml-auto text-sm text-slate-500"></span>
     </div>
 
-    <!-- Table -->
-    <div class="overflow-x-auto rounded-xl bg-white shadow-sm ring-1 ring-slate-200">
-      <table class="min-w-full text-sm">
+    <!-- Item list: a table on wide screens, a tappable list on phones. Click an item to see its card. -->
+    <div class="overflow-hidden rounded-xl bg-white shadow-sm ring-1 ring-slate-200">
+      <table id="itemTable" class="hidden min-w-full text-sm">
         <thead class="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
           <tr>
             <th data-sort="item_name" class="sortable px-4 py-3">Item Name</th>
             <th data-sort="sku" class="sortable px-4 py-3">SKU</th>
-            <th data-sort="physical_stock" class="sortable px-4 py-3 text-right">Physical</th>
-            <th data-sort="committed_stock" class="sortable px-4 py-3 text-right">Committed</th>
-            <th data-sort="available_stock" class="sortable px-4 py-3 text-right">Available</th>
-            <th data-sort="status" class="sortable px-4 py-3">Status</th>
-            <th data-sort="active" class="sortable px-4 py-3">Active</th>
-            <th data-sort="updated_at" class="sortable px-4 py-3">Updated</th>
-            <th class="px-4 py-3 text-right">Actions</th>
+            <th data-sort="item_ref" class="sortable px-4 py-3">ItemRef</th>
           </tr>
         </thead>
         <tbody id="itemRows" class="divide-y divide-slate-100"></tbody>
       </table>
+      <ul id="itemList" class="hidden divide-y divide-slate-100"></ul>
       <div id="emptyState" class="hidden px-4 py-12 text-center text-slate-500"></div>
     </div>
   </section>
 
   <!-- SQL TAB -->
   <section id="tab-sql" class="hidden">
-    <div class="rounded-xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
+    <div class="rounded-xl bg-white p-3 sm:p-4 shadow-sm ring-1 ring-slate-200">
       <div class="mb-2 flex flex-wrap gap-2" id="presets"></div>
       <textarea id="sqlInput" rows="6" spellcheck="false" class="sql w-full rounded-lg border border-slate-300 p-3 text-sm focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500" placeholder="SELECT * FROM v_item_check WHERE status = 'LOW';"></textarea>
       <div class="mt-2 flex flex-wrap items-center gap-2">
@@ -146,9 +144,54 @@
   </section>
 </main>
 
+<!-- Floating add button (phones) -->
+<button id="fabAdd" type="button" aria-label="Add item" class="fixed right-5 z-30 flex h-14 w-14 items-center justify-center rounded-full bg-teal-700 text-3xl font-light text-white shadow-lg active:bg-teal-800 sm:hidden">+</button>
+
+<!-- Item card -->
+<div id="detailModal" class="modal-bg fixed inset-0 z-40 hidden items-end justify-center sm:items-center sm:p-4">
+  <div class="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-t-2xl bg-white shadow-xl sm:rounded-xl">
+    <div class="flex items-start gap-3 border-b border-slate-100 px-5 py-4">
+      <h2 id="dName" class="mr-auto text-lg font-semibold leading-snug"></h2>
+      <button type="button" data-close aria-label="Close" class="-mr-2 rounded-lg px-2 text-2xl leading-none text-slate-400 hover:bg-slate-100">×</button>
+    </div>
+    <dl class="space-y-3 px-5 py-4 text-sm">
+      <div>
+        <dt class="text-xs font-medium uppercase tracking-wide text-slate-500">SKU</dt>
+        <dd id="dSku" class="mt-0.5 break-all font-mono"></dd>
+      </div>
+      <div>
+        <dt class="text-xs font-medium uppercase tracking-wide text-slate-500">ItemRef</dt>
+        <dd id="dRef" class="mt-0.5 break-all"></dd>
+      </div>
+      <div class="grid grid-cols-3 gap-2">
+        <div class="rounded-lg bg-slate-50 p-3">
+          <dt class="text-xs text-slate-500">Physical Stock</dt>
+          <dd id="dPhys" class="num mt-1 text-xl font-bold"></dd>
+        </div>
+        <div class="rounded-lg bg-slate-50 p-3">
+          <dt class="text-xs text-slate-500">Committed Stock</dt>
+          <dd id="dComm" class="num mt-1 text-xl font-bold"></dd>
+        </div>
+        <div class="rounded-lg bg-slate-50 p-3">
+          <dt class="text-xs text-slate-500">Available</dt>
+          <dd id="dAvail" class="num mt-1 text-xl font-bold"></dd>
+        </div>
+      </div>
+      <div class="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2.5">
+        <dt class="font-medium">Active</dt>
+        <dd class="flex items-center gap-2"><span id="dActiveText" class="text-slate-600"></span><span id="dActive"></span></dd>
+      </div>
+    </dl>
+    <div class="flex gap-2 border-t border-slate-100 px-5 py-3">
+      <button type="button" id="dDelete" class="mr-auto rounded-lg px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50">Delete</button>
+      <button type="button" id="dEdit" class="rounded-lg bg-teal-700 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-800">Edit</button>
+    </div>
+  </div>
+</div>
+
 <!-- Add / Edit modal -->
 <div id="itemModal" class="modal-bg fixed inset-0 z-40 hidden items-center justify-center p-4">
-  <form id="itemForm" class="w-full max-w-md rounded-xl bg-white shadow-xl" novalidate>
+  <form id="itemForm" class="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-xl bg-white shadow-xl" novalidate>
     <div class="border-b border-slate-100 px-5 py-4">
       <h2 id="itemModalTitle" class="text-lg font-semibold">Add Item</h2>
     </div>
@@ -159,16 +202,20 @@
       </label>
       <label class="block text-sm">
         <span class="font-medium">SKU <span class="text-red-500">*</span></span>
-        <input name="sku" class="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 font-mono focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500">
+        <input name="sku" autocapitalize="characters" class="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 font-mono focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500">
+      </label>
+      <label class="block text-sm">
+        <span class="font-medium">ItemRef</span>
+        <input name="item_ref" class="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500">
       </label>
       <div class="grid grid-cols-2 gap-3">
         <label class="block text-sm">
           <span class="font-medium">Physical Stock QTY</span>
-          <input name="physical_stock" type="number" min="0" step="1" value="0" class="num mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500">
+          <input name="physical_stock" type="number" inputmode="numeric" min="0" step="1" value="0" class="num mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500">
         </label>
         <label class="block text-sm">
           <span class="font-medium">Committed Stock</span>
-          <input name="committed_stock" type="number" min="0" step="1" value="0" class="num mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500">
+          <input name="committed_stock" type="number" inputmode="numeric" min="0" step="1" value="0" class="num mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500">
         </label>
       </div>
       <label class="flex items-center gap-2 text-sm">
@@ -207,7 +254,7 @@
     </div>
     <div class="space-y-3 px-5 py-4 text-sm">
       <p class="text-slate-600">Choose a <b>.csv</b> or <b>.xlsx</b> file with the columns
-        <i>Item Name, SKU, Physical Stock QTY, Committed Stock, Active</i>. An existing SKU is updated, a new SKU is added.
+        <i>Item Name, SKU, ItemRef, Physical Stock QTY, Committed Stock, Active</i>. An existing SKU is updated, a new SKU is added.
         Or choose a <b>.db</b> backup to restore.</p>
       <button id="btnTemplate" type="button" class="text-teal-700 underline hover:text-teal-900">Download import template</button>
       <input id="importFile" type="file" accept=".csv,.xlsx,.xls,.db,.sqlite,.sqlite3" class="block w-full text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-teal-50 file:px-3 file:py-2 file:font-medium file:text-teal-800 hover:file:bg-teal-100">
@@ -246,7 +293,7 @@
 </div>
 
 <!-- Toasts -->
-<div id="toasts" class="fixed bottom-4 right-4 z-50 flex flex-col gap-2"></div>
+<div id="toasts" class="fixed bottom-24 left-4 right-4 z-50 sm:bottom-4 sm:left-auto flex flex-col gap-2"></div>
 
 <script>
 'use strict';
@@ -259,13 +306,15 @@ const SUPABASE_URL = 'https://lszowqcpvqqvcnnhiseq.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_Ov8EbpvWuxLpobyqiBuN5w_AU9aIDME';
 const ONLINE = !!(SUPABASE_URL && SUPABASE_ANON_KEY);
 const LS_SAMPLE = 'itemchecker.sample';
-const HEADERS = ['Item Name', 'SKU', 'Physical Stock QTY', 'Committed Stock', 'Active'];
+const HEADERS = ['Item Name', 'SKU', 'ItemRef', 'Physical Stock QTY', 'Committed Stock', 'Active'];
+const COL_WIDTHS = [{ wch: 34 }, { wch: 16 }, { wch: 16 }, { wch: 18 }, { wch: 16 }, { wch: 8 }];
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS items (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
   item_name       TEXT    NOT NULL,
   sku             TEXT    NOT NULL UNIQUE COLLATE NOCASE,
+  item_ref        TEXT    NOT NULL DEFAULT '',
   physical_stock  INTEGER NOT NULL DEFAULT 0 CHECK (physical_stock  >= 0),
   committed_stock INTEGER NOT NULL DEFAULT 0 CHECK (committed_stock >= 0),
   active          INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
@@ -275,9 +324,10 @@ CREATE TABLE IF NOT EXISTS items (
 CREATE TRIGGER IF NOT EXISTS trg_items_updated AFTER UPDATE ON items
 BEGIN
   UPDATE items SET updated_at = datetime('now','localtime') WHERE id = OLD.id;
-END;
-CREATE VIEW IF NOT EXISTS v_item_check AS
-SELECT id, item_name, sku, physical_stock, committed_stock,
+END;`;
+const VIEW = `
+CREATE VIEW v_item_check AS
+SELECT id, item_name, sku, item_ref, physical_stock, committed_stock,
        (physical_stock - committed_stock) AS available_stock, active,
        CASE WHEN committed_stock > physical_stock       THEN 'OVER-COMMITTED'
             WHEN physical_stock = 0                     THEN 'NO STOCK'
@@ -324,7 +374,7 @@ let SQL, db;
 let sb = null; // Supabase client (shared mode)
 // snapshot: id -> FIELDS values as last loaded from Supabase; local edits are diffed against it.
 const sync = { snapshot: new Map(), version: null, busy: false, dirty: false, online: true, email: '' };
-const FIELDS = ['item_name', 'sku', 'physical_stock', 'committed_stock', 'active'];
+const FIELDS = ['item_name', 'sku', 'item_ref', 'physical_stock', 'committed_stock', 'active'];
 const state = { search: '', active: 'all', status: 'all', sortCol: 'item_name', sortDir: 'asc' };
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => document.querySelectorAll(s);
@@ -380,6 +430,14 @@ function query(sql, params = []) {
 }
 function exec(sql, params = []) { db.run(sql, params); }
 
+// Creates the tables, and upgrades databases made before the ItemRef column existed.
+function ensureSchema(d) {
+  d.exec(SCHEMA);
+  const cols = d.exec('PRAGMA table_info(items)')[0].values.map((c) => c[1]);
+  if (!cols.includes('item_ref')) d.exec("ALTER TABLE items ADD COLUMN item_ref TEXT NOT NULL DEFAULT ''");
+  d.exec('DROP VIEW IF EXISTS v_item_check;' + VIEW);
+}
+
 function persist() {
   if (ONLINE) return saveOnline();
   const ok = lsSet(LS_DB, bytesToB64(db.export()));
@@ -410,15 +468,16 @@ async function fetchItems() {
   for (let from = 0; ; from += 1000) { // Supabase returns at most 1000 rows per request
     const page = check(await sb.from('items').select(`id,${FIELDS.join(',')},created_at,updated_at`)
       .order('id').range(from, from + 999));
+    for (const r of page) r.item_ref ??= '';
     rows.push(...page);
     if (page.length < 1000) return rows;
   }
 }
 function loadRows(rows) {
   const nd = new SQL.Database();
-  nd.exec(SCHEMA);
+  ensureSchema(nd);
   nd.exec('BEGIN');
-  const st = nd.prepare('INSERT INTO items (id, item_name, sku, physical_stock, committed_stock, active, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)');
+  const st = nd.prepare(`INSERT INTO items (id, ${FIELDS.join(', ')}, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)`);
   for (const r of rows) st.run([r.id, ...FIELDS.map((f) => r[f]), localTime(r.created_at), localTime(r.updated_at)]);
   st.free();
   nd.exec('COMMIT');
@@ -539,15 +598,15 @@ function listItems() {
   const where = [], p = [];
   if (state.search) {
     const like = '%' + state.search.replace(/[\\%_]/g, (c) => '\\' + c) + '%';
-    where.push("(item_name LIKE ? ESCAPE '\\' OR sku LIKE ? ESCAPE '\\')");
-    p.push(like, like);
+    where.push("(item_name LIKE ? ESCAPE '\\' OR sku LIKE ? ESCAPE '\\' OR item_ref LIKE ? ESCAPE '\\')");
+    p.push(like, like, like);
   }
   if (state.active !== 'all') { where.push('active = ?'); p.push(Number(state.active)); }
   if (state.status !== 'all') { where.push('status = ?'); p.push(state.status); }
-  const cols = ['item_name', 'sku', 'physical_stock', 'committed_stock', 'available_stock', 'status', 'active', 'updated_at'];
+  const cols = ['item_name', 'sku', 'item_ref'];
   const col = cols.includes(state.sortCol) ? state.sortCol : 'item_name';
   const dir = state.sortDir === 'desc' ? 'DESC' : 'ASC';
-  const collate = ['item_name', 'sku', 'status'].includes(col) ? ' COLLATE NOCASE' : '';
+  const collate = ['item_name', 'sku', 'item_ref'].includes(col) ? ' COLLATE NOCASE' : '';
   const sql = `SELECT * FROM v_item_check ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
                ORDER BY ${col}${collate} ${dir}, item_name COLLATE NOCASE`;
   return query(sql, p);
@@ -563,6 +622,9 @@ function totals() {
 }
 
 // ---------- Rendering ----------
+const WIDE = window.matchMedia('(min-width: 640px)');
+WIDE.addEventListener('change', () => { if (db) render(); });
+
 const BADGE = {
   'OVER-COMMITTED': 'bg-red-100 text-red-700 ring-red-200',
   'NO STOCK': 'bg-slate-200 text-slate-700 ring-slate-300',
@@ -580,33 +642,33 @@ function render() {
 
   const rows = listItems();
   $('#rowCount').textContent = `Showing ${fmt(rows.length)} of ${fmt(t.total)}`;
-  $('#itemRows').innerHTML = rows.map((r) => `
-    <tr class="${r.active ? '' : 'text-slate-400'} hover:bg-slate-50">
+  // Only the layout that fits the screen is filled: a table on wide screens, a list on phones.
+  const wide = WIDE.matches;
+  $('#itemTable').classList.toggle('hidden', !wide);
+  $('#itemList').classList.toggle('hidden', wide);
+  $('#itemRows').innerHTML = !wide ? '' : rows.map((r) => `
+    <tr data-open="${r.id}" class="cursor-pointer ${r.active ? '' : 'text-slate-400'} hover:bg-slate-50">
       <td class="px-4 py-2.5 font-medium ${r.active ? 'text-slate-800' : ''}">${esc(r.item_name)}</td>
       <td class="px-4 py-2.5 font-mono text-xs">${esc(r.sku)}</td>
-      <td class="num px-4 py-2.5 text-right">${fmt(r.physical_stock)}</td>
-      <td class="num px-4 py-2.5 text-right">${fmt(r.committed_stock)}</td>
-      <td class="num px-4 py-2.5 text-right font-semibold ${r.available_stock < 0 ? 'text-red-600' : ''}">${fmt(r.available_stock)}</td>
-      <td class="px-4 py-2.5"><span class="inline-block whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${BADGE[r.status]}">${esc(r.status)}</span></td>
-      <td class="px-4 py-2.5">
-        <button data-toggle="${r.id}" title="${r.active ? 'Mark inactive' : 'Mark active'}"
-          class="relative inline-flex h-5 w-9 items-center rounded-full transition ${r.active ? 'bg-teal-600' : 'bg-slate-300'}">
-          <span class="inline-block h-4 w-4 rounded-full bg-white shadow transition ${r.active ? 'translate-x-4' : 'translate-x-0.5'}"></span>
-        </button>
-      </td>
-      <td class="whitespace-nowrap px-4 py-2.5 text-xs text-slate-500">${esc(r.updated_at)}</td>
-      <td class="whitespace-nowrap px-4 py-2.5 text-right">
-        <button data-edit="${r.id}" class="rounded px-2 py-1 text-teal-700 hover:bg-teal-50">Edit</button>
-        <button data-delete="${r.id}" class="rounded px-2 py-1 text-red-600 hover:bg-red-50">Delete</button>
-      </td>
+      <td class="px-4 py-2.5 text-xs">${r.item_ref ? esc(r.item_ref) : '<span class="text-slate-300">—</span>'}</td>
     </tr>`).join('');
+  $('#itemList').innerHTML = wide ? '' : rows.map((r) => `
+    <li><button type="button" data-open="${r.id}" class="flex w-full items-center gap-3 px-4 py-3 text-left active:bg-slate-100 ${r.active ? '' : 'opacity-50'}">
+      <span class="min-w-0 flex-1">
+        <span class="line-clamp-2 block font-medium text-slate-800">${esc(r.item_name)}</span>
+        <span class="mt-0.5 block break-all font-mono text-xs text-slate-500">${esc(r.sku)}</span>
+        <span class="block break-all text-xs text-slate-500">Ref: ${r.item_ref ? esc(r.item_ref) : '—'}</span>
+      </span>
+      <span class="text-xl text-slate-300">›</span>
+    </button></li>`).join('');
 
   const empty = $('#emptyState');
   if (rows.length) { empty.classList.add('hidden'); }
   else {
     empty.classList.remove('hidden');
-    empty.textContent = t.total ? 'No items match the current filters.' : 'No items yet. Click “+ Add Item” or Import a file.';
+    empty.textContent = t.total ? 'No items match the current filters.' : 'No items yet. Tap “+” to add one, or Import a file.';
   }
+  if (!$('#detailModal').classList.contains('hidden') && !fillDetail()) closeModal($('#detailModal'));
 
   $$('th[data-sort]').forEach((th) => {
     const base = th.textContent.replace(/ [▲▼]$/, '');
@@ -658,6 +720,7 @@ function openItemForm(id = null) {
     $('#itemModalTitle').textContent = 'Edit Item';
     form.item_name.value = r.item_name;
     form.sku.value = r.sku;
+    form.item_ref.value = r.item_ref;
     form.physical_stock.value = r.physical_stock;
     form.committed_stock.value = r.committed_stock;
     form.active.checked = !!r.active;
@@ -693,6 +756,7 @@ form.addEventListener('submit', (e) => {
   try {
     const name = form.item_name.value.trim();
     const sku = form.sku.value.trim();
+    const ref = form.item_ref.value.trim();
     if (!name) throw new Error('Item Name is required.');
     if (!sku) throw new Error('SKU is required.');
     const phys = parseFormQty(form.physical_stock, 'Physical Stock QTY');
@@ -701,41 +765,76 @@ form.addEventListener('submit', (e) => {
     const dup = findSku(sku, editingId);
     if (dup) throw new Error(`SKU "${dup.sku}" already exists (${dup.item_name}). SKUs are not case-sensitive.`);
     if (editingId) {
-      exec('UPDATE items SET item_name=?, sku=?, physical_stock=?, committed_stock=?, active=? WHERE id=?',
-        [name, sku, phys, comm, active, editingId]);
+      exec('UPDATE items SET item_name=?, sku=?, item_ref=?, physical_stock=?, committed_stock=?, active=? WHERE id=?',
+        [name, sku, ref, phys, comm, active, editingId]);
       toast(`Updated ${sku}`);
     } else {
-      exec('INSERT INTO items (item_name, sku, physical_stock, committed_stock, active) VALUES (?,?,?,?,?)',
-        [name, sku, phys, comm, active]);
+      exec('INSERT INTO items (item_name, sku, item_ref, physical_stock, committed_stock, active) VALUES (?,?,?,?,?,?)',
+        [name, sku, ref, phys, comm, active]);
       toast(`Added ${sku}`);
     }
     persist();
     closeModal(form);
     render();
+    if (editingId) openDetail(editingId);
   } catch (ex) {
     err.textContent = ex.message;
     err.classList.remove('hidden');
   }
 });
 
-// ---------- Table actions ----------
-$('#itemRows').addEventListener('click', (e) => {
-  const t = e.target.closest('button');
-  if (!t) return;
-  if (t.dataset.edit) openItemForm(Number(t.dataset.edit));
-  else if (t.dataset.toggle) {
-    exec('UPDATE items SET active = 1 - active WHERE id = ?', [Number(t.dataset.toggle)]);
+// ---------- Item card ----------
+let detailId = null;
+
+function fillDetail() {
+  const r = detailId === null ? null : query('SELECT * FROM v_item_check WHERE id = ?', [detailId])[0];
+  if (!r) return false;
+  $('#dName').textContent = r.item_name;
+  $('#dSku').textContent = r.sku;
+  $('#dRef').textContent = r.item_ref || '—';
+  $('#dPhys').textContent = fmt(r.physical_stock);
+  $('#dComm').textContent = fmt(r.committed_stock);
+  $('#dAvail').textContent = fmt(r.available_stock);
+  $('#dAvail').classList.toggle('text-red-600', r.available_stock < 0);
+  $('#dActiveText').textContent = r.active ? 'Yes' : 'No';
+  $('#dActive').innerHTML = `
+    <button type="button" data-toggle title="${r.active ? 'Mark inactive' : 'Mark active'}"
+      class="relative inline-flex h-6 w-11 items-center rounded-full transition ${r.active ? 'bg-teal-600' : 'bg-slate-300'}">
+      <span class="inline-block h-5 w-5 rounded-full bg-white shadow transition ${r.active ? 'translate-x-5' : 'translate-x-0.5'}"></span>
+    </button>`;
+  return true;
+}
+function openDetail(id) {
+  detailId = id;
+  if (fillDetail()) openModal('#detailModal');
+}
+
+function onOpenClick(e) {
+  const t = e.target.closest('[data-open]');
+  if (t) openDetail(Number(t.dataset.open));
+}
+$('#itemRows').addEventListener('click', onOpenClick);
+$('#itemList').addEventListener('click', onOpenClick);
+
+$('#dActive').addEventListener('click', (e) => {
+  if (!e.target.closest('[data-toggle]')) return;
+  exec('UPDATE items SET active = 1 - active WHERE id = ?', [detailId]);
+  persist(); render();
+});
+$('#dEdit').addEventListener('click', () => {
+  closeModal($('#dEdit'));
+  openItemForm(detailId);
+});
+$('#dDelete').addEventListener('click', () => {
+  const id = detailId;
+  const r = query('SELECT item_name, sku FROM items WHERE id = ?', [id])[0];
+  if (!r) return;
+  closeModal($('#dDelete'));
+  confirmBox('Delete item?', `${r.item_name} (${r.sku}) will be permanently removed.`, 'Delete', () => {
+    exec('DELETE FROM items WHERE id = ?', [id]);
     persist(); render();
-  } else if (t.dataset.delete) {
-    const id = Number(t.dataset.delete);
-    const r = query('SELECT item_name, sku FROM items WHERE id = ?', [id])[0];
-    if (!r) return;
-    confirmBox('Delete item?', `${r.item_name} (${r.sku}) will be permanently removed.`, 'Delete', () => {
-      exec('DELETE FROM items WHERE id = ?', [id]);
-      persist(); render();
-      toast(`Deleted ${r.sku}`);
-    });
-  }
+    toast(`Deleted ${r.sku}`);
+  });
 });
 
 $$('th[data-sort]').forEach((th) => th.addEventListener('click', () => {
@@ -792,13 +891,13 @@ $$('.tab-btn').forEach((b) => b.addEventListener('click', () => showTab(b.datase
 
 // ---------- Export ----------
 function exportRows() {
-  return query('SELECT item_name, sku, physical_stock, committed_stock, active FROM items ORDER BY item_name COLLATE NOCASE, sku');
+  return query('SELECT item_name, sku, item_ref, physical_stock, committed_stock, active FROM items ORDER BY item_name COLLATE NOCASE, sku');
 }
 function itemsSheet(rows, boolActive) {
-  const aoa = [HEADERS, ...rows.map((r) => [r.item_name, r.sku, r.physical_stock, r.committed_stock,
+  const aoa = [HEADERS, ...rows.map((r) => [r.item_name, r.sku, r.item_ref, r.physical_stock, r.committed_stock,
     boolActive ? !!r.active : (r.active ? 'TRUE' : 'FALSE')])];
   const ws = XLSX.utils.aoa_to_sheet(aoa);
-  ws['!cols'] = [{ wch: 34 }, { wch: 16 }, { wch: 18 }, { wch: 16 }, { wch: 8 }];
+  ws['!cols'] = COL_WIDTHS;
   return ws;
 }
 function exportAs(kind) {
@@ -828,6 +927,7 @@ $$('[data-export]').forEach((b) => b.addEventListener('click', () => exportAs(b.
 const HEADER_ALIASES = {
   item_name: ['itemname', 'name', 'item', 'productname'],
   sku: ['sku', 'itemcode', 'skucode'],
+  item_ref: ['itemref', 'itemreference', 'reference', 'ref', 'refno', 'referenceno', 'referencenumber'],
   physical_stock: ['physicalstockqty', 'physicalstock', 'physicalqty', 'physical', 'stockonhand', 'onhand', 'qtyonhand'],
   committed_stock: ['committedstock', 'committedstockqty', 'committedqty', 'committed'],
   active: ['active', 'isactive'],
@@ -880,6 +980,8 @@ function importItems(rows) {
   if (headerIdx < 0) throw new Error('Could not find the header row. The file needs at least the columns "Item Name" and "SKU".');
 
   const get = (row, f) => (map[f] === undefined ? '' : row[map[f]]);
+  // Files without an ItemRef column leave existing ItemRefs alone.
+  const setRef = map.item_ref === undefined ? '' : 'item_ref = excluded.item_ref, ';
   let added = 0, updated = 0;
   const skipped = [];
   db.exec('BEGIN');
@@ -903,10 +1005,11 @@ function importItems(rows) {
       if (why) { skipped.push({ rowNo, sku, why }); continue; }
 
       const exists = !!findSku(sku);
-      exec(`INSERT INTO items (item_name, sku, physical_stock, committed_stock, active) VALUES (?,?,?,?,?)
-            ON CONFLICT(sku) DO UPDATE SET item_name = excluded.item_name,
+      const ref = String(get(row, 'item_ref')).trim();
+      exec(`INSERT INTO items (item_name, sku, item_ref, physical_stock, committed_stock, active) VALUES (?,?,?,?,?,?)
+            ON CONFLICT(sku) DO UPDATE SET item_name = excluded.item_name, ${setRef}
               physical_stock = excluded.physical_stock, committed_stock = excluded.committed_stock,
-              active = excluded.active`, [name, sku, phys, comm, active]);
+              active = excluded.active`, [name, sku, ref, phys, comm, active]);
       exists ? updated++ : added++;
     }
     db.exec('COMMIT');
@@ -923,8 +1026,8 @@ function restoreDb(buf) {
     nd = new SQL.Database(buf);
     const t = nd.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'items'");
     if (!t.length) throw new Error('This .db file does not contain an items table.');
-    nd.exec(SCHEMA);
-    nd.exec('SELECT id, item_name, sku, status FROM v_item_check LIMIT 1');
+    ensureSchema(nd);
+    nd.exec('SELECT id, item_name, sku, item_ref, status FROM v_item_check LIMIT 1');
   } catch (ex) {
     if (nd) nd.close();
     throw new Error(/not a database|malformed/i.test(ex.message) ? 'This file is not a valid SQLite database.' : ex.message);
@@ -987,22 +1090,23 @@ $('#btnDoImport').addEventListener('click', async () => {
 $('#btnTemplate').addEventListener('click', () => {
   const wb = XLSX.utils.book_new();
   const ws = XLSX.utils.aoa_to_sheet([HEADERS]);
-  ws['!cols'] = [{ wch: 34 }, { wch: 16 }, { wch: 18 }, { wch: 16 }, { wch: 8 }];
+  ws['!cols'] = COL_WIDTHS;
   XLSX.utils.book_append_sheet(wb, ws, 'Items');
   const help = XLSX.utils.aoa_to_sheet([
     ['How to fill the Items sheet'],
     ['Item Name and SKU are required.'],
     ['SKU must be unique. It is not case-sensitive (HC-001 = hc-001). An existing SKU is updated on import.'],
+    ['ItemRef is optional. If the file has no ItemRef column, existing ItemRefs are kept.'],
     ['Physical Stock QTY and Committed Stock: whole numbers, 0 or more. Blank = 0. Commas are fine (1,200).'],
     ['Active: TRUE/FALSE, YES/NO, 1/0, or Active/Inactive. Blank = TRUE.'],
     [],
     ['Example'],
     HEADERS,
-    ['Nordic Dining Chair', 'HC-CHR-001', 120, 30, 'TRUE'],
-    ['Oak Coffee Table', 'HC-TBL-014', 15, 18, 'TRUE'],
-    ['Rattan Floor Lamp', 'HC-LMP-077', 0, 0, 'FALSE'],
+    ['Nordic Dining Chair', 'HC-CHR-001', 'REF-1001', 120, 30, 'TRUE'],
+    ['Oak Coffee Table', 'HC-TBL-014', 'REF-1002', 15, 18, 'TRUE'],
+    ['Rattan Floor Lamp', 'HC-LMP-077', '', 0, 0, 'FALSE'],
   ]);
-  help['!cols'] = [{ wch: 34 }, { wch: 16 }, { wch: 18 }, { wch: 16 }, { wch: 8 }];
+  help['!cols'] = COL_WIDTHS;
   XLSX.utils.book_append_sheet(wb, help, 'Instructions');
   XLSX.writeFile(wb, 'ItemChecker_Import_Template.xlsx');
 });
@@ -1073,6 +1177,7 @@ $('#btnSqlCsv').addEventListener('click', () => {
 
 // ---------- Buttons ----------
 $('#btnAdd').addEventListener('click', () => openItemForm());
+$('#fabAdd').addEventListener('click', () => openItemForm());
 
 // ---------- Init ----------
 async function init() {
@@ -1118,12 +1223,12 @@ async function init() {
   }
   const saved = lsGet(LS_DB);
   if (saved) {
-    try { db = new SQL.Database(b64ToBytes(saved)); db.exec(SCHEMA); }
+    try { db = new SQL.Database(b64ToBytes(saved)); ensureSchema(db); }
     catch { db = null; toast('Saved data could not be read. Starting with a new database.', 'error'); }
   }
   if (!db) {
     db = new SQL.Database();
-    db.exec(SCHEMA);
+    ensureSchema(db);
     seedSample();
     persist();
   }

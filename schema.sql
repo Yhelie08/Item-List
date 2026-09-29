@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS items (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
   item_name       TEXT    NOT NULL,
   sku             TEXT    NOT NULL UNIQUE COLLATE NOCASE,
+  item_ref        TEXT    NOT NULL DEFAULT '',
   physical_stock  INTEGER NOT NULL DEFAULT 0 CHECK (physical_stock  >= 0),
   committed_stock INTEGER NOT NULL DEFAULT 0 CHECK (committed_stock >= 0),
   active          INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
@@ -23,7 +24,7 @@ END;
 --   LOW             available <= 5
 --   OK              everything else
 CREATE VIEW IF NOT EXISTS v_item_check AS
-SELECT id, item_name, sku, physical_stock, committed_stock,
+SELECT id, item_name, sku, item_ref, physical_stock, committed_stock,
        (physical_stock - committed_stock) AS available_stock, active,
        CASE WHEN committed_stock > physical_stock       THEN 'OVER-COMMITTED'
             WHEN physical_stock = 0                     THEN 'NO STOCK'
