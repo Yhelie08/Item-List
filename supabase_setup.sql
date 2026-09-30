@@ -17,6 +17,14 @@ create table if not exists public.items (
 -- ItemRef (added later; this line upgrades a table made before it existed)
 alter table public.items add column if not exists item_ref text not null default '';
 
+-- Warehouse (added later; same kind of upgrade line)
+alter table public.items add column if not exists warehouse text not null default '';
+
+-- Bin Location and the two verifier counts (added later). Committed Stock is no longer used.
+alter table public.items add column if not exists bin_location text not null default '';
+alter table public.items add column if not exists verifier1_count integer check (verifier1_count >= 0);
+alter table public.items add column if not exists verifier2_count integer check (verifier2_count >= 0);
+
 -- SKUs are unique and not case-sensitive (HC-001 = hc-001)
 create unique index if not exists items_sku_nocase on public.items (lower(sku));
 

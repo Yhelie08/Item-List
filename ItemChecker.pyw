@@ -1,7 +1,7 @@
 """Item Checker - desktop app.
 
-Stores the item list in a SQLite database (items.db, next to this file),
-compares Physical Stock against Committed Stock, and flags items that need attention.
+Stores the item list in a SQLite database (items.db, next to this file) and checks
+the Physical Stock of each item against the counts of two verifiers.
 Import/export: CSV, Excel (.xlsx), and SQLite (.db) backup/restore.
 
 Shared mode: when SUPABASE_URL and SUPABASE_ANON_KEY are set, the item list lives in
@@ -36,25 +36,30 @@ else:
 DB_PATH = os.environ.get('ITEMCHECKER_DB') or os.path.join(APP_DIR, 'items.db')
 
 # Shared online database (Supabase → Project Settings → API). Leave empty to keep the data on this PC only.
-SUPABASE_URL = 'https://lszowqcpvqqvcnnhiseq.supabase.co'
-SUPABASE_ANON_KEY = 'sb_publishable_Ov8EbpvWuxLpobyqiBuN5w_AU9aIDME'
+SUPABASE_URL = ''
+SUPABASE_ANON_KEY = ''
 # The web version everyone opens (GitHub Pages). Used by the "Open in Browser" button.
 WEB_URL = 'https://yhelie08.github.io/Item-List/'
 # Shared mode keeps its local copy here, so the original items.db is never overwritten.
 CACHE_PATH = os.environ.get('ITEMCHECKER_CACHE') or os.path.join(APP_DIR, 'items_online_cache.db')
 SESSION_PATH = os.path.join(os.environ.get('APPDATA') or os.path.expanduser('~'), 'ItemChecker', 'session.json')
 
-HEADERS = ['Item Name', 'SKU', 'ItemRef', 'Physical Stock QTY', 'Committed Stock', 'Active']
-STATUSES = ['OVER-COMMITTED', 'NO STOCK', 'LOW', 'OK']
+HEADERS = ['Item Name', 'SKU', 'ItemRef', 'Warehouse', 'Bin Location', 'Physical Stock QTY',
+           'Verifier 1 Count', 'Verifier 2 Count', 'Active']
+STATUSES = ['MISMATCH', 'TO COUNT', 'MATCH', 'NO STOCK']
 
+# Older databases still have a committed_stock column; it is no longer used.
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS items (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
   item_name       TEXT    NOT NULL,
   sku             TEXT    NOT NULL UNIQUE COLLATE NOCASE,
   item_ref        TEXT    NOT NULL DEFAULT '',
+  warehouse       TEXT    NOT NULL DEFAULT '',
+  bin_location    TEXT    NOT NULL DEFAULT '',
   physical_stock  INTEGER NOT NULL DEFAULT 0 CHECK (physical_stock  >= 0),
-  committed_stock INTEGER NOT NULL DEFAULT 0 CHECK (committed_stock >= 0),
+  verifier1_count INTEGER CHECK (verifier1_count >= 0),
+  verifier2_count INTEGER CHECK (verifier2_count >= 0),
   active          INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
   created_at      TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
   updated_at      TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
@@ -64,46 +69,45 @@ BEGIN
   UPDATE items SET updated_at = datetime('now','localtime') WHERE id = OLD.id;
 END;
 """
+# Items with stock are counted by two verifiers; an item with 0 stock gets its count typed into Physical Stock.
 VIEW = """
 CREATE VIEW v_item_check AS
-SELECT id, item_name, sku, item_ref, physical_stock, committed_stock,
-       (physical_stock - committed_stock) AS available_stock, active,
-       CASE WHEN committed_stock > physical_stock       THEN 'OVER-COMMITTED'
-            WHEN physical_stock = 0                     THEN 'NO STOCK'
-            WHEN physical_stock - committed_stock <= 5  THEN 'LOW'
-            ELSE 'OK' END AS status,
+SELECT id, item_name, sku, item_ref, warehouse, bin_location, physical_stock,
+       verifier1_count, verifier2_count, active,
+       CASE WHEN physical_stock = 0 THEN 'NO STOCK'
+            WHEN verifier1_count IS NULL OR verifier2_count IS NULL THEN 'TO COUNT'
+            WHEN verifier1_count = physical_stock AND verifier2_count = physical_stock THEN 'MATCH'
+            ELSE 'MISMATCH' END AS status,
        updated_at
 FROM items;
 """
 
 SAMPLE_ITEMS = [
-    ('Nordic Dining Chair', 'HC-CHR-001', 120, 30, 1),
-    ('Oak Coffee Table', 'HC-TBL-014', 15, 18, 1),
-    ('Rattan Floor Lamp', 'HC-LMP-077', 0, 0, 0),
-    ('Linen Throw Pillow', 'HC-PLW-203', 40, 36, 1),
-    ('Ceramic Vase Set', 'HC-DEC-310', 60, 12, 1),
+    ('Nordic Dining Chair', 'HC-CHR-001', 'A-01', 120, 120, 120, 1),
+    ('Oak Coffee Table', 'HC-TBL-014', 'A-02', 15, 15, 14, 1),
+    ('Rattan Floor Lamp', 'HC-LMP-077', '', 0, None, None, 0),
+    ('Linen Throw Pillow', 'HC-PLW-203', 'B-03', 40, None, None, 1),
+    ('Ceramic Vase Set', 'HC-DEC-310', 'B-04', 60, 60, None, 1),
 ]
 
 PRESETS = [
-    ('Summary by status', """SELECT status, COUNT(*) AS items,
-       SUM(physical_stock) AS physical, SUM(committed_stock) AS committed,
-       SUM(available_stock) AS available
+    ('Summary by status', """SELECT status, COUNT(*) AS items, SUM(physical_stock) AS physical
 FROM v_item_check
 GROUP BY status
-ORDER BY CASE status WHEN 'OVER-COMMITTED' THEN 1 WHEN 'NO STOCK' THEN 2 WHEN 'LOW' THEN 3 ELSE 4 END;"""),
-    ('Over-committed', """SELECT item_name, sku, physical_stock, committed_stock, available_stock
+ORDER BY CASE status WHEN 'MISMATCH' THEN 1 WHEN 'TO COUNT' THEN 2 WHEN 'MATCH' THEN 3 ELSE 4 END;"""),
+    ('Mismatch', """SELECT item_name, sku, bin_location, physical_stock, verifier1_count, verifier2_count
 FROM v_item_check
-WHERE status = 'OVER-COMMITTED'
-ORDER BY available_stock;"""),
-    ('Low / no stock (active)', """SELECT item_name, sku, physical_stock, committed_stock, available_stock, status
+WHERE status = 'MISMATCH'
+ORDER BY item_name;"""),
+    ('To count (active)', """SELECT item_name, sku, bin_location, physical_stock, verifier1_count, verifier2_count
 FROM v_item_check
-WHERE active = 1 AND status IN ('LOW', 'NO STOCK')
-ORDER BY available_stock;"""),
-    ('Inactive items', """SELECT item_name, sku, physical_stock, committed_stock
+WHERE active = 1 AND status = 'TO COUNT'
+ORDER BY bin_location, item_name;"""),
+    ('Inactive items', """SELECT item_name, sku, physical_stock
 FROM items
 WHERE active = 0
 ORDER BY item_name;"""),
-    ('Recently updated', """SELECT item_name, sku, physical_stock, committed_stock, updated_at
+    ('Recently updated', """SELECT item_name, sku, physical_stock, verifier1_count, verifier2_count, updated_at
 FROM items
 ORDER BY updated_at DESC
 LIMIT 20;"""),
@@ -112,21 +116,24 @@ LIMIT 20;"""),
 
 
 def ensure_schema(conn):
-    """Create the tables, and upgrade databases made before the ItemRef column existed."""
+    """Create the tables, and upgrade databases made before the ItemRef / Warehouse / Bin / Verifier columns existed."""
     conn.executescript(SCHEMA)
-    if 'item_ref' not in [c[1] for c in conn.execute('PRAGMA table_info(items)')]:
-        conn.execute("ALTER TABLE items ADD COLUMN item_ref TEXT NOT NULL DEFAULT ''")
+    have = [c[1] for c in conn.execute('PRAGMA table_info(items)')]
+    for col in ('item_ref', 'warehouse', 'bin_location'):
+        if col not in have:
+            conn.execute(f"ALTER TABLE items ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
+    for col in ('verifier1_count', 'verifier2_count'):
+        if col not in have:
+            conn.execute(f'ALTER TABLE items ADD COLUMN {col} INTEGER CHECK ({col} >= 0)')
     conn.executescript('DROP VIEW IF EXISTS v_item_check;' + VIEW)
 
 
-def compute_status(physical, committed):
-    if committed > physical:
-        return 'OVER-COMMITTED'
+def count_status(physical, v1, v2):
     if physical == 0:
         return 'NO STOCK'
-    if physical - committed <= 5:
-        return 'LOW'
-    return 'OK'
+    if v1 is None or v2 is None:
+        return 'TO COUNT'
+    return 'MATCH' if v1 == physical and v2 == physical else 'MISMATCH'
 
 
 # ---------------------------------------------------------------- Import parsing
@@ -134,10 +141,14 @@ def compute_status(physical, committed):
 HEADER_ALIASES = {
     'item_name': ['itemname', 'name', 'item', 'productname'],
     'sku': ['sku', 'itemcode', 'skucode'],
-    'item_ref': ['itemref', 'itemreference', 'reference', 'ref', 'refno', 'referenceno', 'referencenumber'],
+    'item_ref': ['itemref', 'cfitemref', 'itemreference', 'reference', 'ref', 'refno', 'referenceno', 'referencenumber'],
+    'warehouse': ['warehouse', 'warehousename', 'wh'],
+    # Zoho Inventory: CF.Loc is used before Bin Name, which Zoho leaves blank unless bin tracking is on.
+    'bin_location': ['binlocation', 'cfloc', 'loc', 'location', 'binname', 'bin'],
     'physical_stock': ['physicalstockqty', 'physicalstock', 'physicalqty', 'physical', 'stockonhand', 'onhand', 'qtyonhand'],
-    'committed_stock': ['committedstock', 'committedstockqty', 'committedqty', 'committed'],
-    'active': ['active', 'isactive'],
+    'verifier1_count': ['verifier1count', 'verifier1'],
+    'verifier2_count': ['verifier2count', 'verifier2'],
+    'active': ['active', 'isactive', 'status'],
 }
 
 
@@ -146,12 +157,14 @@ def norm_header(h):
 
 
 def map_headers(row):
+    """Column index per field. Earlier aliases win, so a file with both "CF.Loc" and "Bin Name" uses CF.Loc."""
+    names = [norm_header(h) for h in row]
     found = {}
-    for i, h in enumerate(row):
-        n = norm_header(h)
-        for field, aliases in HEADER_ALIASES.items():
-            if field not in found and n in aliases:
-                found[field] = i
+    for field, aliases in HEADER_ALIASES.items():
+        for a in aliases:
+            if a in names:
+                found[field] = names.index(a)
+                break
     return found
 
 
@@ -180,6 +193,21 @@ def parse_qty(v):
     if not re.fullmatch(r'-?\d+(\.0+)?', s):
         return None
     return int(s.split('.')[0])
+
+
+def check_qty(label, v):
+    if v is None:
+        raise ValueError(f'{label} must be a whole number.')
+    if v < 0:
+        raise ValueError(f'{label} cannot be negative.')
+
+
+def parse_count(v):
+    """Verifier count: None when blank (not counted yet), -1 when not a whole number."""
+    if cell_text(v) == '':
+        return None
+    n = parse_qty(v)
+    return -1 if n is None else n
 
 
 def parse_active(v):
@@ -235,7 +263,8 @@ def split_sql(sql):
 
 # ---------------------------------------------------------------- Supabase
 
-FIELDS = ('item_name', 'sku', 'item_ref', 'physical_stock', 'committed_stock', 'active')
+FIELDS = ('item_name', 'sku', 'item_ref', 'warehouse', 'bin_location', 'physical_stock',
+          'verifier1_count', 'verifier2_count', 'active')
 
 
 class CloudError(Exception):
@@ -343,8 +372,11 @@ class Cloud:
             page = self.api('GET', f'items?select=id,{",".join(FIELDS)},created_at,updated_at'
                                    f'&order=id&limit={self.PAGE}&offset={offset}')
             for r in page:
-                if r.get('item_ref') is None:
-                    r['item_ref'] = ''
+                for f in ('item_ref', 'warehouse', 'bin_location'):
+                    if r.get(f) is None:
+                        r[f] = ''
+                for f in ('verifier1_count', 'verifier2_count'):
+                    r.setdefault(f, None)
             rows += page
             if len(page) < self.PAGE:
                 return rows
@@ -380,8 +412,8 @@ class Store:
         if is_new and seed:
             self.conn.execute('BEGIN')
             self.conn.executemany(
-                'INSERT INTO items (item_name, sku, physical_stock, committed_stock, active) VALUES (?,?,?,?,?)',
-                SAMPLE_ITEMS)
+                'INSERT INTO items (item_name, sku, bin_location, physical_stock, verifier1_count, verifier2_count, active) '
+                'VALUES (?,?,?,?,?,?,?)', SAMPLE_ITEMS)
             self.conn.execute('COMMIT')
             self.sample_flag = True
 
@@ -405,7 +437,7 @@ class Store:
             self.conn.execute('DELETE FROM items')
             self.conn.executemany(
                 f'INSERT INTO items (id, {", ".join(FIELDS)}, created_at, updated_at) '
-                'VALUES (?,?,?,?,?,?,?,?,?)',
+                f'VALUES ({",".join("?" * (len(FIELDS) + 3))})',
                 [(r['id'], *(r[f] for f in FIELDS), local_time(r['created_at']), local_time(r['updated_at'])) for r in rows])
             self.conn.execute('COMMIT')
         except Exception:
@@ -432,17 +464,18 @@ class Store:
         where, params = [], []
         if search:
             like = '%' + re.sub(r'([\\%_])', r'\\\1', search) + '%'
-            where.append("(item_name LIKE ? ESCAPE '\\' OR sku LIKE ? ESCAPE '\\' OR item_ref LIKE ? ESCAPE '\\')")
-            params += [like, like, like]
+            where.append("(item_name LIKE ? ESCAPE '\\' OR sku LIKE ? ESCAPE '\\' OR item_ref LIKE ? ESCAPE '\\' "
+                         "OR warehouse LIKE ? ESCAPE '\\' OR bin_location LIKE ? ESCAPE '\\')")
+            params += [like] * 5
         if active in ('0', '1'):
             where.append('active = ?')
             params.append(int(active))
         if status in STATUSES:
             where.append('status = ?')
             params.append(status)
-        cols = ['item_name', 'sku', 'item_ref', 'physical_stock', 'committed_stock', 'available_stock', 'status', 'active', 'updated_at']
+        cols = ['item_name', 'sku', 'item_ref', 'warehouse', 'bin_location', 'physical_stock', 'status', 'active', 'updated_at']
         col = sort_col if sort_col in cols else 'item_name'
-        collate = ' COLLATE NOCASE' if col in ('item_name', 'sku', 'item_ref', 'status') else ''
+        collate = ' COLLATE NOCASE' if col in ('item_name', 'sku', 'item_ref', 'warehouse', 'bin_location', 'status') else ''
         direction = 'DESC' if sort_dir == 'desc' else 'ASC'
         sql = (f"SELECT * FROM v_item_check {'WHERE ' + ' AND '.join(where) if where else ''} "
                f"ORDER BY {col}{collate} {direction}, item_name COLLATE NOCASE")
@@ -453,8 +486,8 @@ class Store:
             SELECT COUNT(*) AS total,
                    COALESCE(SUM(active), 0) AS active,
                    COALESCE(SUM(physical_stock), 0) AS physical,
-                   COALESCE(SUM(committed_stock), 0) AS committed,
-                   COALESCE(SUM(status = 'OVER-COMMITTED'), 0) AS over
+                   COALESCE(SUM(status = 'TO COUNT'), 0) AS to_count,
+                   COALESCE(SUM(status = 'MISMATCH'), 0) AS mismatch
             FROM v_item_check""").fetchone()
 
     def get(self, item_id):
@@ -463,31 +496,46 @@ class Store:
     def get_check(self, item_id):
         return self.conn.execute('SELECT * FROM v_item_check WHERE id = ?', (item_id,)).fetchone()
 
+    def suggestions(self, col):
+        """Warehouses or bin locations already in use, for the Add/Edit suggestions."""
+        return [r[0] for r in self.conn.execute(
+            f"SELECT DISTINCT {col} FROM items WHERE {col} <> '' ORDER BY {col} COLLATE NOCASE")]
+
     def find_sku(self, sku, except_id=None):
         return self.conn.execute('SELECT id, item_name, sku FROM items WHERE sku = ? AND id IS NOT ?',
                                  (sku, except_id)).fetchone()
 
-    def save_item(self, item_id, name, sku, item_ref, physical, committed, active):
-        """Validate and insert (item_id None) or update. Raises ValueError with a user message."""
-        name, sku, item_ref = (name or '').strip(), (sku or '').strip(), (item_ref or '').strip()
+    def add_item(self, name, sku, item_ref, warehouse, bin_location, physical, active):
+        """Validate and insert a new item. Raises ValueError with a user message."""
+        name, sku, item_ref, warehouse, bin_location = (
+            (v or '').strip() for v in (name, sku, item_ref, warehouse, bin_location))
         if not name:
             raise ValueError('Item Name is required.')
         if not sku:
             raise ValueError('SKU is required.')
-        for label, v in (('Physical Stock QTY', physical), ('Committed Stock', committed)):
-            if v is None:
-                raise ValueError(f'{label} must be a whole number.')
-            if v < 0:
-                raise ValueError(f'{label} cannot be negative.')
-        dup = self.find_sku(sku, item_id)
+        check_qty('Physical Stock QTY', physical)
+        dup = self.find_sku(sku)
         if dup:
             raise ValueError(f'SKU "{dup["sku"]}" already exists ({dup["item_name"]}). SKUs are not case-sensitive.')
-        if item_id is None:
-            self.conn.execute('INSERT INTO items (item_name, sku, item_ref, physical_stock, committed_stock, active) '
-                              'VALUES (?,?,?,?,?,?)', (name, sku, item_ref, physical, committed, int(bool(active))))
+        self.conn.execute('INSERT INTO items (item_name, sku, item_ref, warehouse, bin_location, physical_stock, active) '
+                          'VALUES (?,?,?,?,?,?,?)', (name, sku, item_ref, warehouse, bin_location, physical, int(bool(active))))
+
+    def update_item(self, item_id, item_ref, warehouse, bin_location, active, physical=None, counts=None):
+        """Item Name and SKU of a saved item never change. Pass physical (item with 0 stock)
+        or counts=(verifier 1, verifier 2) (item with stock; None = not counted yet)."""
+        item_ref, warehouse, bin_location = ((v or '').strip() for v in (item_ref, warehouse, bin_location))
+        sets, params = ['item_ref=?', 'warehouse=?', 'bin_location=?', 'active=?'], [item_ref, warehouse, bin_location, int(bool(active))]
+        if physical is not None or counts is None:
+            check_qty('Physical Stock QTY', physical)
+            sets.append('physical_stock=?')
+            params.append(physical)
         else:
-            self.conn.execute('UPDATE items SET item_name=?, sku=?, item_ref=?, physical_stock=?, committed_stock=?, active=? '
-                              'WHERE id=?', (name, sku, item_ref, physical, committed, int(bool(active)), item_id))
+            for label, v in zip(('Verifier 1 (Count)', 'Verifier 2 (Count)'), counts):
+                if v is not None:
+                    check_qty(label, v)
+            sets += ['verifier1_count=?', 'verifier2_count=?']
+            params += list(counts)
+        self.conn.execute(f'UPDATE items SET {", ".join(sets)} WHERE id=?', (*params, item_id))
 
     def toggle_active(self, item_id):
         self.conn.execute('UPDATE items SET active = 1 - active WHERE id = ?', (item_id,))
@@ -517,8 +565,9 @@ class Store:
             i = cols.get(field)
             return row[i] if i is not None and i < len(row) else None
 
-        # Files without an ItemRef column leave existing ItemRefs alone.
-        set_ref = 'item_ref = excluded.item_ref, ' if 'item_ref' in cols else ''
+        # Files without an ItemRef, Warehouse, Bin Location or Verifier column leave the saved values alone.
+        set_ref = ''.join(f'{c} = excluded.{c}, ' for c in
+                          ('item_ref', 'warehouse', 'bin_location', 'verifier1_count', 'verifier2_count') if c in cols)
         added = updated = 0
         skipped = []
         self.conn.execute('BEGIN')
@@ -528,7 +577,8 @@ class Store:
                 if not row or all(cell_text(c) == '' for c in row):
                     continue
                 name, sku = cell_text(get(row, 'item_name')), cell_text(get(row, 'sku'))
-                phys, comm = parse_qty(get(row, 'physical_stock')), parse_qty(get(row, 'committed_stock'))
+                phys = parse_qty(get(row, 'physical_stock'))
+                v1, v2 = parse_count(get(row, 'verifier1_count')), parse_count(get(row, 'verifier2_count'))
                 active = parse_active(get(row, 'active'))
                 why = None
                 if not name:
@@ -537,12 +587,12 @@ class Store:
                     why = 'SKU is required'
                 elif phys is None:
                     why = f'Physical Stock QTY "{cell_text(get(row, "physical_stock"))}" is not a whole number'
-                elif comm is None:
-                    why = f'Committed Stock "{cell_text(get(row, "committed_stock"))}" is not a whole number'
                 elif phys < 0:
                     why = 'Physical Stock QTY cannot be negative'
-                elif comm < 0:
-                    why = 'Committed Stock cannot be negative'
+                elif v1 is not None and v1 < 0:
+                    why = f'Verifier 1 Count "{cell_text(get(row, "verifier1_count"))}" is not a whole number, 0 or more'
+                elif v2 is not None and v2 < 0:
+                    why = f'Verifier 2 Count "{cell_text(get(row, "verifier2_count"))}" is not a whole number, 0 or more'
                 elif active is None:
                     why = f'Active "{cell_text(get(row, "active"))}" is not TRUE/FALSE, YES/NO, 1/0 or Active'
                 if why:
@@ -550,10 +600,13 @@ class Store:
                     continue
                 exists = self.find_sku(sku) is not None
                 self.conn.execute(f"""
-                    INSERT INTO items (item_name, sku, item_ref, physical_stock, committed_stock, active) VALUES (?,?,?,?,?,?)
+                    INSERT INTO items (item_name, sku, item_ref, warehouse, bin_location, physical_stock,
+                                       verifier1_count, verifier2_count, active)
+                    VALUES (?,?,?,?,?,?,?,?,?)
                     ON CONFLICT(sku) DO UPDATE SET item_name = excluded.item_name, {set_ref}
-                      physical_stock = excluded.physical_stock, committed_stock = excluded.committed_stock,
-                      active = excluded.active""", (name, sku, cell_text(get(row, 'item_ref')), phys, comm, active))
+                      physical_stock = excluded.physical_stock, active = excluded.active""",
+                    (name, sku, cell_text(get(row, 'item_ref')), cell_text(get(row, 'warehouse')),
+                     cell_text(get(row, 'bin_location')), phys, v1, v2, active))
                 if exists:
                     updated += 1
                 else:
@@ -565,7 +618,8 @@ class Store:
         return added, updated, skipped
 
     def export_rows(self):
-        return self.conn.execute('SELECT item_name, sku, item_ref, physical_stock, committed_stock, active FROM items '
+        return self.conn.execute('SELECT item_name, sku, item_ref, warehouse, bin_location, physical_stock, '
+                                 'verifier1_count, verifier2_count, active, status FROM v_item_check '
                                  'ORDER BY item_name COLLATE NOCASE, sku').fetchall()
 
     def backup_to(self, path):
@@ -589,7 +643,7 @@ class Store:
                 if not mem.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='items'").fetchone():
                     raise ValueError('This .db file does not contain an items table.')
                 ensure_schema(mem)
-                mem.execute('SELECT id, item_name, sku, item_ref, status FROM v_item_check LIMIT 1').fetchall()
+                mem.execute('SELECT id, item_name, sku, item_ref, warehouse, status FROM v_item_check LIMIT 1').fetchall()
             except sqlite3.DatabaseError as ex:
                 raise ValueError(f'This file is not a valid Item Checker database ({ex}).')
             mem.execute('PRAGMA user_version = 0')
@@ -620,18 +674,28 @@ def style_header(ws):
     for c in ws[1]:
         c.font = Font(bold=True, color='FFFFFF')
         c.fill = fill
-    for col, w in zip('ABCDEF', (34, 16, 16, 18, 16, 9)):
+    for col, w in zip('ABCDEFGHIJ', (34, 16, 16, 16, 14, 18, 16, 16, 9, 14)):
         ws.column_dimensions[col].width = w
     ws.freeze_panes = 'A2'
+
+
+# "Count Result" is for reading only; Import ignores it.
+EXPORT_HEADERS = HEADERS + ['Count Result']
+
+
+def export_values(r, active):
+    return [r['item_name'], r['sku'], r['item_ref'], r['warehouse'], r['bin_location'], r['physical_stock'],
+            '' if r['verifier1_count'] is None else r['verifier1_count'],
+            '' if r['verifier2_count'] is None else r['verifier2_count'], active, r['status']]
 
 
 def write_xlsx(path, rows):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = 'Items'
-    ws.append(HEADERS)
+    ws.append(EXPORT_HEADERS)
     for r in rows:
-        ws.append([r['item_name'], r['sku'], r['item_ref'], r['physical_stock'], r['committed_stock'], bool(r['active'])])
+        ws.append(export_values(r, bool(r['active'])))
     style_header(ws)
     wb.save(path)
 
@@ -655,14 +719,17 @@ def write_template(path):
         ['Item Name and SKU are required.'],
         ['SKU must be unique. It is not case-sensitive (HC-001 = hc-001). An existing SKU is updated on import.'],
         ['ItemRef is optional. If the file has no ItemRef column, existing ItemRefs are kept.'],
-        ['Physical Stock QTY and Committed Stock: whole numbers, 0 or more. Blank = 0. Commas are fine (1,200).'],
+        ['Warehouse and Bin Location are optional. If the file has no such column, the saved values are kept.'],
+        ['Physical Stock QTY: whole number, 0 or more. Blank = 0. Commas are fine (1,200).'],
+        ['Verifier 1 Count and Verifier 2 Count: optional whole numbers. Blank = not counted yet. '
+         'No such column = saved counts are kept.'],
         ['Active: TRUE/FALSE, YES/NO, 1/0, or Active/Inactive. Blank = TRUE.'],
         [],
         ['Example'],
         HEADERS,
-        ['Nordic Dining Chair', 'HC-CHR-001', 'REF-1001', 120, 30, 'TRUE'],
-        ['Oak Coffee Table', 'HC-TBL-014', 'REF-1002', 15, 18, 'TRUE'],
-        ['Rattan Floor Lamp', 'HC-LMP-077', '', 0, 0, 'FALSE'],
+        ['Nordic Dining Chair', 'HC-CHR-001', 'REF-1001', 'WH1 BANAWE', 'A-01', 120, 120, 120, 'TRUE'],
+        ['Oak Coffee Table', 'HC-TBL-014', 'REF-1002', 'WH1 BANAWE', 'A-02', 15, '', '', 'TRUE'],
+        ['Rattan Floor Lamp', 'HC-LMP-077', '', '', '', 0, '', '', 'FALSE'],
     ]:
         help_ws.append(line)
     help_ws['A1'].font = Font(bold=True, size=12)
@@ -673,6 +740,8 @@ def write_template(path):
 # ---------------------------------------------------------------- UI
 
 TEAL, TEAL_DARK, BG, CARD, MUTED, RED = '#0f766e', '#115e59', '#f1f5f9', '#ffffff', '#64748b', '#dc2626'
+AMBER = '#b45309'
+STATUS_COLORS = {'MISMATCH': RED, 'TO COUNT': AMBER, 'MATCH': '#047857', 'NO STOCK': MUTED}
 FONT = ('Segoe UI', 10)
 
 
@@ -727,12 +796,14 @@ class ItemCard(tk.Toplevel):
 
         self.l_sku = field('SKU', 2, ('Consolas', 11))
         self.l_ref = field('ItemRef', 4, FONT)
+        self.l_wh = field('Warehouse', 6, FONT)
+        self.l_bin = field('Bin Location', 8, FONT)
 
         stats = tk.Frame(self, bg=CARD)
-        stats.grid(row=6, column=0, sticky='we', pady=(12, 0))
+        stats.grid(row=10, column=0, sticky='we', pady=(12, 0))
         self.stat = {}
-        for i, (key, title) in enumerate((('physical_stock', 'Physical Stock'), ('committed_stock', 'Committed Stock'),
-                                          ('available_stock', 'Available'))):
+        for i, (key, title) in enumerate((('physical_stock', 'Physical Stock'), ('verifier1_count', 'Verifier 1'),
+                                          ('verifier2_count', 'Verifier 2'))):
             stats.columnconfigure(i, weight=1, uniform='s')
             box = tk.Frame(stats, bg=BG, padx=10, pady=8)
             box.grid(row=0, column=i, sticky='nsew', padx=(0 if i == 0 else 6, 0))
@@ -740,8 +811,14 @@ class ItemCard(tk.Toplevel):
             self.stat[key] = tk.Label(box, bg=BG, font=('Segoe UI Semibold', 16))
             self.stat[key].pack(anchor='w')
 
+        res = tk.Frame(self, bg=BG, padx=10, pady=6)
+        res.grid(row=11, column=0, sticky='we', pady=(8, 0))
+        tk.Label(res, text='Count result', bg=BG, font=('Segoe UI Semibold', 10)).pack(side='left')
+        self.l_status = tk.Label(res, bg=BG, font=('Segoe UI Semibold', 10))
+        self.l_status.pack(side='right')
+
         act = tk.Frame(self, bg=BG, padx=10, pady=6)
-        act.grid(row=7, column=0, sticky='we', pady=(8, 0))
+        act.grid(row=12, column=0, sticky='we', pady=(8, 0))
         tk.Label(act, text='Active', bg=BG, font=('Segoe UI Semibold', 10)).pack(side='left')
         self.b_toggle = ttk.Button(act, command=self.toggle)
         self.b_toggle.pack(side='right')
@@ -749,7 +826,7 @@ class ItemCard(tk.Toplevel):
         self.l_active.pack(side='right', padx=(0, 8))
 
         btns = tk.Frame(self, bg=CARD)
-        btns.grid(row=8, column=0, sticky='we', pady=(14, 0))
+        btns.grid(row=13, column=0, sticky='we', pady=(14, 0))
         ttk.Button(btns, text='Delete', command=self.delete).pack(side='left')
         ttk.Button(btns, text='Edit', style='Accent.TButton', command=self.edit).pack(side='right')
         ttk.Button(btns, text='Close', command=self.destroy).pack(side='right', padx=(0, 6))
@@ -768,7 +845,7 @@ class ItemCard(tk.Toplevel):
 
     def rewrap(self, e=None):
         width = max(self.winfo_width() - 40, 200)
-        for lbl in (self.l_name, self.l_sku, self.l_ref):
+        for lbl in (self.l_name, self.l_sku, self.l_ref, self.l_wh, self.l_bin):
             lbl.configure(wraplength=width)
 
     def fill(self):
@@ -779,8 +856,13 @@ class ItemCard(tk.Toplevel):
         self.l_name.config(text=r['item_name'])
         self.l_sku.config(text=r['sku'])
         self.l_ref.config(text=r['item_ref'] or '—')
+        self.l_wh.config(text=r['warehouse'] or '—')
+        self.l_bin.config(text=r['bin_location'] or '—')
         for key, lbl in self.stat.items():
-            lbl.config(text=f'{r[key]:,}', fg=RED if r[key] < 0 else '#0f172a')
+            v = r[key]
+            off = key != 'physical_stock' and v is not None and v != r['physical_stock']
+            lbl.config(text='—' if v is None else f'{v:,}', fg=RED if off else '#0f172a')
+        self.l_status.config(text=r['status'], fg=STATUS_COLORS[r['status']])
         self.l_active.config(text='Yes' if r['active'] else 'No', fg=TEAL if r['active'] else MUTED)
         self.b_toggle.config(text='Mark inactive' if r['active'] else 'Mark active')
         return True
@@ -807,47 +889,76 @@ class ItemCard(tk.Toplevel):
 
 
 class ItemDialog(tk.Toplevel):
+    """Add a new item, or edit a saved one. A saved item's Item Name and SKU are read-only.
+    With 0 Physical Stock the count goes straight into Physical Stock; with stock,
+    Physical Stock is locked and the two verifiers enter their counts."""
+
     def __init__(self, app, item=None, reopen_card=False):
         super().__init__(app)
         self.app, self.item, self.reopen_card = app, item, reopen_card
+        self.locked = bool(item) and item['physical_stock'] > 0
         self.title('Edit Item' if item else 'Add Item')
         self.configure(bg=CARD, padx=18, pady=14)
         self.resizable(False, False)
         self.transient(app)
 
-        self.v_name = tk.StringVar(value=item['item_name'] if item else '')
-        self.v_sku = tk.StringVar(value=item['sku'] if item else '')
-        self.v_ref = tk.StringVar(value=item['item_ref'] if item else '')
-        self.v_phys = tk.StringVar(value=str(item['physical_stock']) if item else '0')
-        self.v_comm = tk.StringVar(value=str(item['committed_stock']) if item else '0')
+        def val(key, blank=''):
+            return blank if not item or item[key] is None else str(item[key])
+
+        self.v_name = tk.StringVar(value=val('item_name'))
+        self.v_sku = tk.StringVar(value=val('sku'))
+        self.v_ref = tk.StringVar(value=val('item_ref'))
+        self.v_wh = tk.StringVar(value=val('warehouse'))
+        self.v_bin = tk.StringVar(value=val('bin_location'))
+        self.v_phys = tk.StringVar(value=val('physical_stock', '0'))
+        self.v_c1 = tk.StringVar(value=val('verifier1_count'))
+        self.v_c2 = tk.StringVar(value=val('verifier2_count'))
         self.v_active = tk.BooleanVar(value=bool(item['active']) if item else True)
 
         def label(text, r, c=0):
             tk.Label(self, text=text, bg=CARD, font=('Segoe UI Semibold', 10)).grid(row=r, column=c, sticky='w', pady=(6, 2))
 
-        label('Item Name *', 0)
+        ro = ['readonly'] if item else []
+        label('Item Name' if item else 'Item Name *', 0)
         e_name = ttk.Entry(self, textvariable=self.v_name, width=44, font=FONT)
+        e_name.state(ro)
         e_name.grid(row=1, column=0, columnspan=2, sticky='we')
-        label('SKU *', 2)
-        ttk.Entry(self, textvariable=self.v_sku, width=44, font=('Consolas', 10)).grid(row=3, column=0, columnspan=2, sticky='we')
+        label('SKU' if item else 'SKU *', 2)
+        e_sku = ttk.Entry(self, textvariable=self.v_sku, width=44, font=('Consolas', 10))
+        e_sku.state(ro)
+        e_sku.grid(row=3, column=0, columnspan=2, sticky='we')
         label('ItemRef', 4)
         ttk.Entry(self, textvariable=self.v_ref, width=44, font=FONT).grid(row=5, column=0, columnspan=2, sticky='we')
-        label('Physical Stock QTY', 6, 0)
-        label('Committed Stock', 6, 1)
-        ttk.Spinbox(self, from_=0, to=10**9, textvariable=self.v_phys, width=18, font=FONT).grid(row=7, column=0, sticky='w', padx=(0, 8))
-        ttk.Spinbox(self, from_=0, to=10**9, textvariable=self.v_comm, width=18, font=FONT).grid(row=7, column=1, sticky='w')
-        ttk.Checkbutton(self, text='Active', variable=self.v_active).grid(row=8, column=0, sticky='w', pady=(10, 0))
+        label('Warehouse', 6)
+        ttk.Combobox(self, textvariable=self.v_wh, values=app.store.suggestions('warehouse'), width=42, font=FONT).grid(
+            row=7, column=0, columnspan=2, sticky='we')
+        label('Bin Location', 8)
+        ttk.Combobox(self, textvariable=self.v_bin, values=app.store.suggestions('bin_location'), width=42, font=FONT).grid(
+            row=9, column=0, columnspan=2, sticky='we')
+        label('Physical Stock QTY', 10)
+        e_phys = ttk.Spinbox(self, from_=0, to=10**9, textvariable=self.v_phys, width=18, font=FONT)
+        e_phys.grid(row=11, column=0, sticky='w', padx=(0, 8))
+        first = e_phys if item else e_name
+        if self.locked:
+            e_phys.state(['disabled'])  # 'readonly' would still let the arrows change it
+            label('Verifier 1 (Count)', 12, 0)
+            label('Verifier 2 (Count)', 12, 1)
+            e_c1 = ttk.Entry(self, textvariable=self.v_c1, width=20, font=FONT)
+            e_c1.grid(row=13, column=0, sticky='w', padx=(0, 8))
+            ttk.Entry(self, textvariable=self.v_c2, width=20, font=FONT).grid(row=13, column=1, sticky='w')
+            first = e_c1
+        ttk.Checkbutton(self, text='Active', variable=self.v_active).grid(row=14, column=0, sticky='w', pady=(10, 0))
 
         self.preview = tk.Label(self, bg=CARD, fg=MUTED, font=FONT, anchor='w')
-        self.preview.grid(row=9, column=0, columnspan=2, sticky='we', pady=(8, 0))
+        self.preview.grid(row=15, column=0, columnspan=2, sticky='we', pady=(8, 0))
         self.error = tk.Label(self, bg='#fef2f2', fg='#b91c1c', font=FONT, anchor='w', justify='left', wraplength=380)
         btns = tk.Frame(self, bg=CARD)
-        btns.grid(row=11, column=0, columnspan=2, sticky='e', pady=(14, 0))
+        btns.grid(row=17, column=0, columnspan=2, sticky='e', pady=(14, 0))
         ttk.Button(btns, text='Cancel', command=self.destroy).pack(side='right')
         ttk.Button(btns, text='Save', style='Accent.TButton', command=self.save).pack(side='right', padx=(0, 6))
 
-        self.v_phys.trace_add('write', lambda *_: self.update_preview())
-        self.v_comm.trace_add('write', lambda *_: self.update_preview())
+        for v in (self.v_phys, self.v_c1, self.v_c2):
+            v.trace_add('write', lambda *_: self.update_preview())
         self.update_preview()
         self.bind('<Return>', lambda e: self.save())
         self.bind('<Escape>', lambda e: self.destroy())
@@ -857,22 +968,40 @@ class ItemDialog(tk.Toplevel):
         y = app.winfo_rooty() + (app.winfo_height() - self.winfo_height()) // 3
         self.geometry(f'+{max(x, 0)}+{max(y, 0)}')
         self.grab_set()
-        e_name.focus_set()
+        first.focus_set()
+        if first is e_phys:
+            e_phys.selection_range(0, 'end')
+
+    def counts(self):
+        return tuple(parse_count(v.get()) if self.locked else None for v in (self.v_c1, self.v_c2))
 
     def update_preview(self):
-        p, c = parse_qty(self.v_phys.get()), parse_qty(self.v_comm.get())
-        if p is None or c is None or p < 0 or c < 0:
+        p, (c1, c2) = parse_qty(self.v_phys.get()), self.counts()
+        if p is None or p < 0 or -1 in (c1, c2):
             self.preview.config(text='')
         else:
-            self.preview.config(text=f'Available: {p - c:,}   ·   Status: {compute_status(p, c)}')
+            s = count_status(p, c1, c2)
+            self.preview.config(text=f'Count result: {s}', fg=STATUS_COLORS[s])
 
     def save(self):
+        s = self.app.store
         try:
-            self.app.store.save_item(self.item['id'] if self.item else None, self.v_name.get(), self.v_sku.get(),
-                                     self.v_ref.get(), parse_qty(self.v_phys.get()), parse_qty(self.v_comm.get()), self.v_active.get())
+            if not self.item:
+                s.add_item(self.v_name.get(), self.v_sku.get(), self.v_ref.get(), self.v_wh.get(), self.v_bin.get(),
+                           parse_qty(self.v_phys.get()), self.v_active.get())
+            elif self.locked:
+                c = self.counts()
+                for label, v in zip(('Verifier 1 (Count)', 'Verifier 2 (Count)'), c):
+                    if v == -1:
+                        raise ValueError(f'{label} must be a whole number.')
+                s.update_item(self.item['id'], self.v_ref.get(), self.v_wh.get(), self.v_bin.get(), self.v_active.get(),
+                              counts=c)
+            else:
+                s.update_item(self.item['id'], self.v_ref.get(), self.v_wh.get(), self.v_bin.get(), self.v_active.get(),
+                              physical=parse_qty(self.v_phys.get()))
         except ValueError as ex:
             self.error.config(text=str(ex), padx=8, pady=6)
-            self.error.grid(row=10, column=0, columnspan=2, sticky='we', pady=(8, 0))
+            self.error.grid(row=16, column=0, columnspan=2, sticky='we', pady=(8, 0))
             return
         sku = self.v_sku.get().strip()
         self.destroy()
@@ -1129,7 +1258,7 @@ class App(tk.Tk):
         h.pack(fill='x')
         left = tk.Frame(h, bg=TEAL)
         tk.Label(left, text='Item Checker', bg=TEAL, fg='white', font=('Segoe UI Semibold', 16)).pack(anchor='w')
-        tk.Label(left, text='Physical vs Committed stock · SQLite', bg=TEAL, fg='#ccfbf1', font=('Segoe UI', 9)).pack(anchor='w')
+        tk.Label(left, text='Stock count · SQLite', bg=TEAL, fg='#ccfbf1', font=('Segoe UI', 9)).pack(anchor='w')
         right = tk.Frame(h, bg=TEAL)
         ttk.Button(right, text='+ Add Item', style='Accent.TButton', command=self.add_item).pack(side='right', padx=(6, 0))
         exp = ttk.Menubutton(right, text='Export')
@@ -1199,9 +1328,9 @@ class App(tk.Tk):
         self.s_total = self.stat_card(cards, 'Total Items', on_click=lambda: self.quick_filter('all', 'all'))
         self.s_active = self.stat_card(cards, 'Active', on_click=lambda: self.quick_filter('1', 'all'))
         self.s_phys = self.stat_card(cards, 'Physical QTY')
-        self.s_comm = self.stat_card(cards, 'Committed QTY')
-        self.s_over = self.stat_card(cards, 'Over-committed', RED, on_click=lambda: self.quick_filter('all', 'OVER-COMMITTED'))
-        card_frames = [v.master for v in (self.s_total, self.s_active, self.s_phys, self.s_comm, self.s_over)]
+        self.s_tocount = self.stat_card(cards, 'To count', AMBER, on_click=lambda: self.quick_filter('all', 'TO COUNT'))
+        self.s_mismatch = self.stat_card(cards, 'Mismatch', RED, on_click=lambda: self.quick_filter('all', 'MISMATCH'))
+        card_frames = [v.master for v in (self.s_total, self.s_active, self.s_phys, self.s_tocount, self.s_mismatch)]
         self._card_cols = None
 
         def reflow_cards(e):
@@ -1283,7 +1412,7 @@ class App(tk.Tk):
         self.sql_text = tk.Text(box, height=8, font=('Consolas', 11), wrap='none', undo=True,
                                 relief='solid', bd=1, padx=8, pady=6)
         self.sql_text.pack(fill='x')
-        self.sql_text.insert('1.0', "SELECT * FROM v_item_check WHERE status = 'LOW';")
+        self.sql_text.insert('1.0', "SELECT * FROM v_item_check WHERE status = 'MISMATCH';")
         self.sql_text.bind('<Control-Return>', lambda e: (self.run_sql(), 'break')[1])
         row = tk.Frame(t, bg=BG)
         row.pack(fill='x')
@@ -1292,7 +1421,7 @@ class App(tk.Tk):
         self.b_sql_csv.pack(side='left', padx=(6, 0))
         self.l_sql = tk.Label(row, bg=BG, fg=MUTED)
         self.l_sql.pack(side='right')
-        tk.Label(t, text='Table: items   ·   View: v_item_check (adds available_stock and status)   ·   Changes made here are saved to the database.',
+        tk.Label(t, text='Table: items   ·   View: v_item_check (adds status: MATCH, MISMATCH, TO COUNT or NO STOCK)   ·   Changes made here are saved to the database.',
                  bg=BG, fg=MUTED, font=('Segoe UI', 9)).pack(anchor='w', pady=(4, 6))
         self.sql_err = tk.Label(t, bg='#fef2f2', fg='#b91c1c', font=('Consolas', 10), anchor='w', justify='left', padx=8, pady=6)
         res = tk.Frame(t, bg=BG)
@@ -1351,8 +1480,8 @@ class App(tk.Tk):
         self.s_total.config(text=f'{t["total"]:,}')
         self.s_active.config(text=f'{t["active"]:,}')
         self.s_phys.config(text=f'{t["physical"]:,}')
-        self.s_comm.config(text=f'{t["committed"]:,}')
-        self.s_over.config(text=f'{t["over"]:,}')
+        self.s_tocount.config(text=f'{t["to_count"]:,}')
+        self.s_mismatch.config(text=f'{t["mismatch"]:,}')
 
         status = self.v_statusf.get()
         rows = s.list_items(self.v_search.get().strip(), self.active_opts.get(self.v_active.get(), 'all'),
@@ -1481,8 +1610,8 @@ class App(tk.Tk):
                     if kind == 'xlsx':
                         write_xlsx(path, rows)
                     else:
-                        write_csv(path, HEADERS, [(r['item_name'], r['sku'], r['item_ref'], r['physical_stock'], r['committed_stock'],
-                                                   'TRUE' if r['active'] else 'FALSE') for r in rows])
+                        write_csv(path, EXPORT_HEADERS,
+                                  [export_values(r, 'TRUE' if r['active'] else 'FALSE') for r in rows])
         except Exception as ex:
             messagebox.showerror('Export failed', str(ex), parent=self)
             return

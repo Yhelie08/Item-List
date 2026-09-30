@@ -1,6 +1,6 @@
 # Item Checker
 
-A small desktop app for checking stock levels. It keeps an item list in a local SQLite database, compares **Physical Stock** against **Committed Stock**, and flags the items that need attention.
+A small desktop app for checking stock levels. It keeps an item list in a local SQLite database, and checks the **Physical Stock** of each item against the counts of two verifiers.
 
 ## Status rules
 
@@ -8,19 +8,27 @@ Rules are checked in order:
 
 | Status | Rule |
 | --- | --- |
-| OVER-COMMITTED | committed > physical |
 | NO STOCK | physical = 0 |
-| LOW | available (physical − committed) ≤ 5 |
-| OK | everything else |
+| TO COUNT | Verifier 1 or Verifier 2 has not counted yet |
+| MATCH | both verifier counts equal Physical Stock |
+| MISMATCH | everything else |
 
 ## Item fields
 
-Item Name, SKU, ItemRef (optional), Physical Stock QTY, Committed Stock, Active. SKUs are unique and not case-sensitive.
+Item Name, SKU, ItemRef (optional), Warehouse (optional), Bin Location (optional), Physical Stock QTY, Verifier 1 (Count), Verifier 2 (Count), Active. SKUs are unique and not case-sensitive.
+
+**Add Item:** Item Name and SKU are required; the verifier counts are not shown.
+
+**Edit Item:**
+- Item Name and SKU are read-only.
+- Physical Stock **0**: type the count into Physical Stock.
+- Physical Stock **more than 0**: Physical Stock is read-only; enter Verifier 1 (Count) and Verifier 2 (Count). A blank count means not counted yet.
+- To correct a Physical Stock that is already more than 0, import a file or use the SQL Console.
 
 ## Using the list
 
-- The list shows only **Item Name, SKU and ItemRef**. Search matches all three.
-- Open an item to see its card: Item Name, SKU, ItemRef, Physical Stock, Committed Stock, Available and Active, with Edit, Mark active/inactive and Delete.
+- The list shows only **Item Name, SKU and ItemRef**. Search matches those, Warehouse and Bin Location.
+- Open an item to see its card: Item Name, SKU, ItemRef, Warehouse, Bin Location, Physical Stock, Verifier 1, Verifier 2, Count result and Active, with Edit, Mark active/inactive and Delete.
   - **Desktop:** double-click the item, or select it and press Enter or **View**.
   - **Web / phone:** tap the item. On a phone, add items with the round **+** button.
 - Both apps adjust to the screen size: the web page fits phones, and the desktop window can be made as narrow as 380 px.
@@ -28,8 +36,9 @@ Item Name, SKU, ItemRef (optional), Physical Stock QTY, Committed Stock, Active.
 ## Files
 
 - `ItemChecker.pyw`: the desktop app (Python + Tkinter)
-- `ItemChecker.html`: web version of the checker (`index.html` redirects to it)
-- `supabase_setup.sql`: tables and access rules for the shared online list
+- `ItemChecker.html`: web version of the checker (`index.html` redirects to it). The Android app uses the same screens.
+- `android-app/`: the Android app (Capacitor)
+- `supabase_setup.sql`: tables and access rules for the shared online list (turned off for now)
 - `schema.sql`: SQLite schema (table, `updated_at` trigger, `v_item_check` view)
 - `Item_Checker_Project_Plan.pdf`: project plan
 - `HISTORY.md`: list of changes
@@ -45,30 +54,28 @@ pythonw ItemChecker.pyw
 
 The app creates `items.db` next to the script on first run. To use a different location, set the `ITEMCHECKER_DB` environment variable. The database is not tracked in git.
 
-## Shared online list (Supabase)
+## Android app
 
-When `SUPABASE_URL` and `SUPABASE_ANON_KEY` are filled in, at the top of `ItemChecker.pyw` and in the `<script>` of `ItemChecker.html`, everyone works on **one shared list**:
+`android-app/` packs the screens of `ItemChecker.html` into an Android app that works without internet. Its libraries are saved inside the app.
 
-- **Web:** https://yhelie08.github.io/Item-List/ (GitHub Pages). Share this link.
-- **Desktop:** `ItemChecker.pyw` uses the same online list. It keeps a local copy in `items_online_cache.db` and never overwrites `items.db`.
-- Everyone signs in with an email and password. Changes by one person show up for the others within about 5 seconds.
-- If the online list is empty, the desktop app offers to upload the items from `items.db`.
+**Install on a phone:** copy `ItemChecker.apk` to the phone (USB cable, Drive or Messenger), open it, and allow **Install unknown apps** when asked. To load the list, tap **Import** and choose `items.db` or a CSV/Excel file. Export opens the phone's Share menu.
 
-### One-time setup
+The phone keeps its own list. It does not sync with the PC: copy `items.db` over and Import it again when the list changes.
 
-1. Create a free project at https://supabase.com.
-2. In **SQL Editor**, paste all of `supabase_setup.sql` and click **Run**.
-3. In **Authentication → Sign In / Providers**, turn off **Allow new users to sign up** so only people you add can get in.
-4. In **Authentication → Users → Add user → Create new user**, add each person with an email and password. Tick **Auto Confirm User**.
-5. In **Project Settings → API**, copy the **Project URL** and the **anon public** key into both files.
-6. In the GitHub repo, go to **Settings → Pages**, set the source to **Deploy from a branch → main → / (root)**, and save.
+**Rebuild after changing `ItemChecker.html`:** the build tools (Java 21 and the Android SDK) are in `%LOCALAPPDATA%\ItemCheckerBuild`. In PowerShell:
 
-**Upgrading a project made before ItemRef existed:** run `supabase_setup.sql` again, or just this line. The column must be named exactly `item_ref`:
-
-```sql
-alter table public.items add column if not exists item_ref text not null default '';
+```
+$B = "$env:LOCALAPPDATA\ItemCheckerBuild"; $env:JAVA_HOME = "$B\jdk"; $env:ANDROID_HOME = "$B\sdk"; $env:GRADLE_USER_HOME = "$B\gradle-home"
+cd android-app; npm run sync; cd android; .\gradlew.bat assembleDebug
 ```
 
-The anon key is meant to be public. The row-level security rules in `supabase_setup.sql` only let signed-in users read or change items.
+The app file is `android-app\android\app\build\outputs\apk\debug\app-debug.apk`.
 
-Without these settings, both apps work on their own like before: the desktop uses `items.db`, and the web page saves in the browser.
+## Where the data is saved
+
+Each app keeps its own list on the device:
+
+- **Desktop:** `items.db`, next to `ItemChecker.pyw`.
+- **Web and Android app:** on the device. Each browser and phone has its own list. To move items between them, use Export and Import.
+
+The shared online list (Supabase) was turned off on 2026-09-30. The code for it is still there. To turn it back on, put the Project URL and key back into `SUPABASE_URL` and `SUPABASE_ANON_KEY` at the top of `ItemChecker.pyw` and in the `<script>` of `ItemChecker.html`, and run `supabase_setup.sql` in the Supabase SQL Editor.

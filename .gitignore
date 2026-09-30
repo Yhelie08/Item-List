@@ -5,3 +5,8 @@ items.db
 *.lnk
 __pycache__/
 items_online_cache.db
+# Item data, backups and the built Android app stay on this PC (the repo is public)
+Item00.csv
+backup_*
+*.apk
+image copy 2.png
