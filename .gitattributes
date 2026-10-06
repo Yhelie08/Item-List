@@ -1,3 +1,25 @@
+# Auto-detect text files and normalize line endings
 * text=auto
+
+# Windows scripts and desktop app
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+*.pyw text eol=crlf
+
+# Shell scripts
+*.sh text eol=lf
+
+# Binaries
 *.pdf binary
 *.db binary
+*.sqlite binary
+*.sqlite3 binary
+*.apk binary
+*.jar binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.wasm binary
+*.pyc binary

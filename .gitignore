@@ -1,12 +1,40 @@
+# SQLite databases and journals
 items.db
+items_online_cache.db
+*.db
 *.db-journal
 *.db-wal
 *.db-shm
+*.sqlite
+*.sqlite3
+
+# Windows shortcuts & OS files
 *.lnk
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Python bytecode & caches
 __pycache__/
-items_online_cache.db
-# Item data, backups and the built Android app stay on this PC (the repo is public)
+**/__pycache__/
+*.py[cod]
+*$py.class
+
+# Android / Node / Capacitor build files
+android-app/node_modules/
+android-app/www/
+android-app/android/.gradle/
+android-app/android/app/build/
+android-app/android/build/
+android-app/android/capacitor-cordova-android-plugins/
+android-app/android/local.properties
+node_modules/
+www/
+.gradle/
+*.apk
+
+# Item data, backups and temporary files (stay local)
 Item00.csv
 backup_*
-*.apk
-image copy 2.png
+*.csv.bak
+image*.png

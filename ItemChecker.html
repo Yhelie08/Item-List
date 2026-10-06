@@ -2,14 +2,18 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Item Checker</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/sql-wasm.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
 <style>
-  body { font-family: ui-sans-serif, system-ui, "Segoe UI", Roboto, Arial, sans-serif; }
+  body {
+    font-family: ui-sans-serif, system-ui, "Segoe UI", Roboto, Arial, sans-serif;
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
   .num { font-variant-numeric: tabular-nums; }
   .modal-bg { background: rgba(15, 23, 42, .45); }
   th.sortable { cursor: pointer; user-select: none; }
@@ -20,7 +24,7 @@
   #fabAdd { bottom: calc(1.25rem + env(safe-area-inset-bottom)); }
 </style>
 </head>
-<body class="bg-slate-100 text-slate-800 min-h-screen">
+<body class="bg-slate-100 text-slate-800 min-h-screen overflow-x-hidden">
 
 <!-- Loading overlay -->
 <div id="loading" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-100">
@@ -31,32 +35,40 @@
 </div>
 
 <!-- Header -->
-<header class="bg-teal-700 text-white shadow">
-  <div class="mx-auto flex max-w-7xl flex-wrap items-center gap-3 px-4 py-3">
-    <div class="mr-auto">
-      <h1 class="text-xl font-bold leading-tight">Item Checker</h1>
-      <p class="text-xs text-teal-100">Stock count · SQLite</p>
-    </div>
-    <span id="syncPill" class="hidden rounded-full px-3 py-1 text-xs font-medium"></span>
-    <nav class="flex rounded-lg bg-teal-800/60 p-1 text-sm">
-      <button data-tab="items" class="tab-btn rounded-md px-3 py-1.5 font-medium">Items</button>
-      <button data-tab="sql" class="tab-btn rounded-md px-3 py-1.5 font-medium">SQL Console</button>
-    </nav>
-    <button id="btnImport" class="rounded-lg bg-white/10 px-3 py-2 text-sm font-medium hover:bg-white/20">Import</button>
-    <div class="relative">
-      <button id="btnExport" class="rounded-lg bg-white/10 px-3 py-2 text-sm font-medium hover:bg-white/20">Export ▾</button>
-      <div id="exportMenu" class="absolute right-0 z-30 mt-1 hidden w-52 overflow-hidden rounded-lg bg-white text-sm text-slate-700 shadow-lg ring-1 ring-slate-200">
-        <button data-export="xlsx" class="block w-full px-4 py-2 text-left hover:bg-slate-100">Excel (.xlsx)</button>
-        <button data-export="csv" class="block w-full px-4 py-2 text-left hover:bg-slate-100">CSV (.csv)</button>
-        <button data-export="db" class="block w-full border-t border-slate-100 px-4 py-2 text-left hover:bg-slate-100">SQLite backup (.db)</button>
+<header class="bg-teal-700 text-white shadow sticky top-0 z-30">
+  <div class="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-2 px-3 py-2.5 sm:px-4 sm:py-3">
+    <div class="flex items-center gap-2">
+      <div>
+        <h1 class="text-lg sm:text-xl font-bold leading-tight">Item Checker</h1>
+        <p class="text-[11px] sm:text-xs text-teal-100">Stock count · SQLite</p>
       </div>
+      <span id="syncPill" class="hidden rounded-full px-2.5 py-0.5 text-xs font-medium"></span>
     </div>
-    <button id="btnAdd" class="hidden rounded-lg bg-white px-3 py-2 sm:block text-sm font-semibold text-teal-800 hover:bg-teal-50">+ Add Item</button>
-    <button id="btnSignOut" class="hidden rounded-lg px-3 py-2 text-sm font-medium text-teal-50 hover:bg-white/10">Sign out</button>
+
+    <div class="flex items-center gap-1.5 sm:gap-2">
+      <button id="btnImport" class="rounded-lg bg-white/10 px-2.5 py-1.5 text-xs sm:text-sm font-medium hover:bg-white/20 active:bg-white/30">Import</button>
+      <div class="relative">
+        <button id="btnExport" class="rounded-lg bg-white/10 px-2.5 py-1.5 text-xs sm:text-sm font-medium hover:bg-white/20 active:bg-white/30">Export ▾</button>
+        <div id="exportMenu" class="absolute right-0 z-40 mt-1 hidden w-52 overflow-hidden rounded-lg bg-white text-sm text-slate-700 shadow-lg ring-1 ring-slate-200">
+          <button data-export="xlsx" class="block w-full px-4 py-2 text-left hover:bg-slate-100">Excel (.xlsx)</button>
+          <button data-export="csv" class="block w-full px-4 py-2 text-left hover:bg-slate-100">CSV (.csv)</button>
+          <button data-export="db" class="block w-full border-t border-slate-100 px-4 py-2 text-left hover:bg-slate-100">SQLite backup (.db)</button>
+        </div>
+      </div>
+      <button id="btnAdd" class="hidden rounded-lg bg-white px-3 py-1.5 text-sm font-semibold text-teal-800 hover:bg-teal-50 sm:block">+ Add Item</button>
+      <button id="btnSignOut" class="hidden rounded-lg px-2.5 py-1.5 text-xs sm:text-sm font-medium text-teal-50 hover:bg-white/10">Sign out</button>
+    </div>
+
+    <!-- Segmented tabs: full-width 2-tab bar on phones, inline on desktop -->
+    <nav class="flex w-full sm:w-auto sm:order-none rounded-lg bg-teal-800/60 p-1 text-sm mt-1 sm:mt-0">
+      <button data-tab="search" class="tab-btn flex-1 sm:flex-none text-center rounded-md px-3 py-1.5 font-medium transition bg-white text-teal-800 shadow-sm">Item Search</button>
+      <button data-tab="items" class="tab-btn flex-1 sm:flex-none text-center rounded-md px-3 py-1.5 font-medium transition text-teal-50">All Items</button>
+      <button data-tab="sql" class="tab-btn hidden rounded-md px-3 py-1.5 font-medium">SQL Console</button>
+    </nav>
   </div>
 </header>
 
-<main class="mx-auto max-w-7xl px-4 pb-24 pt-5 sm:pb-5">
+<main class="mx-auto max-w-7xl px-3 sm:px-4 pb-24 pt-3 sm:pt-5 overflow-x-hidden">
 
   <!-- Sample data banner -->
   <div id="sampleBanner" class="mb-4 hidden flex-wrap items-center gap-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
@@ -65,10 +77,114 @@
     <button id="btnKeepSample" class="rounded-md px-3 py-1.5 font-medium hover:bg-amber-100">Keep</button>
   </div>
 
-  <!-- ITEMS TAB -->
-  <section id="tab-items">
-    <!-- Stat cards -->
-    <div class="mb-4 grid grid-cols-2 gap-2 sm:gap-3 md:grid-cols-5">
+  <!-- ITEM SEARCH TAB (Primary / Initial View) -->
+  <section id="tab-search">
+    <!-- Search Bar Card: optimized for mobile touch and barcode scanners -->
+    <div class="mb-4 rounded-xl bg-white p-3 sm:p-4 shadow-sm ring-1 ring-slate-200">
+      <label for="tabSearchInput" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">
+        Scan / Search Item:
+      </label>
+      <div class="flex items-center gap-1.5 sm:gap-2">
+        <div class="relative flex-1 min-w-0">
+          <input id="tabSearchInput" type="text" enterkeyhint="search" placeholder="Scan barcode or type SKU, Name, Ref…"
+            class="w-full rounded-lg border border-slate-300 px-3 py-2 text-base sm:text-sm focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500 pr-8"
+            autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+          <button id="btnClearSearch" type="button" aria-label="Clear search"
+            class="absolute right-2 top-1/2 -translate-y-1/2 hidden text-slate-400 hover:text-slate-600 text-lg leading-none p-1">✕</button>
+        </div>
+        <button id="btnSearchSubmit" type="button" class="shrink-0 rounded-lg bg-teal-700 px-3 sm:px-4 py-2 text-sm font-semibold text-white hover:bg-teal-800 active:bg-teal-900 shadow-sm">
+          Search
+        </button>
+        <button id="btnSearchClear" type="button" class="shrink-0 rounded-lg border border-slate-300 bg-white px-3 sm:px-3.5 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 active:bg-slate-100 shadow-sm">
+          Clear
+        </button>
+      </div>
+      <div id="tabSearchMsg" class="mt-2 text-xs sm:text-sm font-medium empty:hidden"></div>
+    </div>
+
+    <!-- Initial Search Prompt -->
+    <div id="searchPrompt" class="rounded-xl bg-white px-4 py-10 sm:py-12 text-center text-slate-500 shadow-sm ring-1 ring-slate-200">
+      <div class="mx-auto mb-2 text-3xl">🔍</div>
+      <p id="searchPromptText" class="font-medium text-slate-700">Scan or search an item</p>
+      <p id="searchPromptSub" class="text-xs text-slate-500 mt-1">Scan a barcode or enter SKU/Item Name to verify stock count.</p>
+    </div>
+
+    <!-- Multiple matches list -->
+    <div id="searchMatchesCard" class="hidden overflow-hidden rounded-xl bg-white shadow-sm ring-1 ring-slate-200 mb-4">
+      <div class="border-b border-slate-100 bg-slate-50 px-4 py-2.5 text-xs font-semibold uppercase tracking-wide text-slate-500">
+        Multiple Items Found — Tap to Select
+      </div>
+      <ul id="searchMatchesList" class="divide-y divide-slate-100"></ul>
+    </div>
+
+    <!-- Embedded Item Card (No Close button, adapts cleanly to phone width) -->
+    <div id="searchItemCard" class="hidden max-w-lg mx-auto overflow-hidden rounded-xl bg-white shadow-sm ring-1 ring-slate-200">
+      <div class="p-4 sm:p-5">
+        <h2 id="scName" class="text-lg sm:text-xl font-bold leading-snug text-slate-900"></h2>
+        <hr class="my-3 border-slate-200">
+
+        <div class="space-y-3 text-sm">
+          <div>
+            <div class="text-xs font-semibold uppercase tracking-wide text-slate-500">SKU</div>
+            <div id="scSku" class="mt-0.5 break-all font-mono font-medium text-slate-900 text-sm sm:text-base"></div>
+          </div>
+          <div>
+            <div class="text-xs font-semibold uppercase tracking-wide text-slate-500">ItemRef</div>
+            <div id="scRef" class="mt-0.5 break-all text-slate-800"></div>
+          </div>
+          <div>
+            <div class="text-xs font-semibold uppercase tracking-wide text-slate-500">Warehouse</div>
+            <div id="scWh" class="mt-0.5 break-all text-slate-800"></div>
+          </div>
+          <div>
+            <div class="text-xs font-semibold uppercase tracking-wide text-slate-500">Bin Location</div>
+            <div id="scBin" class="mt-0.5 break-all text-slate-800"></div>
+          </div>
+
+          <!-- Verifier 1 & Verifier 2 Tiles -->
+          <div class="grid grid-cols-2 gap-2 pt-1">
+            <div class="rounded-xl bg-slate-50 p-2.5 sm:p-3 ring-1 ring-slate-200/60">
+              <div class="text-xs font-medium text-slate-500">Verifier 1</div>
+              <div id="scV1Content" class="mt-1.5 min-h-[38px] flex items-center"></div>
+            </div>
+            <div class="rounded-xl bg-slate-50 p-2.5 sm:p-3 ring-1 ring-slate-200/60">
+              <div class="text-xs font-medium text-slate-500">Verifier 2</div>
+              <div id="scV2Content" class="mt-1.5 min-h-[38px] flex items-center"></div>
+            </div>
+          </div>
+
+          <!-- Count result -->
+          <div class="flex items-center justify-between rounded-xl bg-slate-50 px-3 py-2.5 ring-1 ring-slate-200/60">
+            <span class="text-sm font-semibold text-slate-700">Count result</span>
+            <span id="scStatus"></span>
+          </div>
+
+          <!-- Active -->
+          <div class="flex items-center justify-between rounded-xl bg-slate-50 px-3 py-2.5 ring-1 ring-slate-200/60">
+            <span class="text-sm font-semibold text-slate-700">Active</span>
+            <div class="flex items-center gap-2">
+              <span id="scActiveText" class="text-xs font-medium text-slate-600"></span>
+              <button id="scBtnToggleActive" type="button" class="rounded border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 shadow-sm active:bg-slate-100">
+                Mark inactive
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Card Footer: Delete button only, NO Close button! -->
+        <div class="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between">
+          <button id="scBtnDelete" type="button" class="rounded-lg bg-red-50 text-red-600 px-4 py-2 text-sm font-semibold hover:bg-red-100 active:bg-red-200">
+            Delete
+          </button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ALL ITEMS TAB -->
+  <section id="tab-items" class="hidden">
+    <!-- Stat cards: 2x2 grid on phones, 4 across on desktop -->
+    <div class="mb-4 grid grid-cols-2 gap-2 sm:gap-3 md:grid-cols-4">
       <button data-card="all" class="stat-card rounded-xl bg-white p-3 sm:p-4 text-left shadow-sm ring-1 ring-slate-200 hover:ring-teal-400">
         <div class="text-xs font-medium uppercase tracking-wide text-slate-500">Total Items</div>
         <div id="statTotal" class="num mt-1 text-xl font-bold sm:text-2xl">0</div>
@@ -77,7 +193,7 @@
         <div class="text-xs font-medium uppercase tracking-wide text-slate-500">Active</div>
         <div id="statActive" class="num mt-1 text-xl font-bold sm:text-2xl">0</div>
       </button>
-      <div class="rounded-xl bg-white p-3 sm:p-4 shadow-sm ring-1 ring-slate-200">
+      <div id="statPhysicalTile" class="hidden rounded-xl bg-white p-3 sm:p-4 shadow-sm ring-1 ring-slate-200">
         <div class="text-xs font-medium uppercase tracking-wide text-slate-500">Physical QTY</div>
         <div id="statPhysical" class="num mt-1 text-xl font-bold sm:text-2xl">0</div>
       </div>
@@ -85,7 +201,7 @@
         <div class="text-xs font-medium uppercase tracking-wide text-amber-700">To count</div>
         <div id="statToCount" class="num mt-1 text-xl font-bold sm:text-2xl text-amber-700">0</div>
       </button>
-      <button data-card="MISMATCH" class="stat-card col-span-2 rounded-xl bg-white p-3 sm:p-4 text-left shadow-sm ring-1 ring-slate-200 hover:ring-red-400 md:col-span-1">
+      <button data-card="MISMATCH" id="statMismatchTile" class="stat-card rounded-xl bg-white p-3 sm:p-4 text-left shadow-sm ring-1 ring-slate-200 hover:ring-red-400">
         <div class="text-xs font-medium uppercase tracking-wide text-red-600">Mismatch</div>
         <div id="statMismatch" class="num mt-1 text-xl font-bold sm:text-2xl text-red-600">0</div>
       </button>
@@ -171,8 +287,8 @@
         <dt class="text-xs font-medium uppercase tracking-wide text-slate-500">Bin Location</dt>
         <dd id="dBin" class="mt-0.5 break-all"></dd>
       </div>
-      <div class="grid grid-cols-3 gap-2">
-        <div class="rounded-lg bg-slate-50 p-3">
+      <div id="dCounts" class="grid grid-cols-2 gap-2">
+        <div id="dPhysTile" class="hidden rounded-lg bg-slate-50 p-3">
           <dt class="text-xs text-slate-500">Physical Stock</dt>
           <dd id="dPhys" class="num mt-1 text-xl font-bold"></dd>
         </div>
@@ -196,7 +312,7 @@
     </dl>
     <div class="flex gap-2 border-t border-slate-100 px-5 py-3">
       <button type="button" id="dDelete" class="mr-auto rounded-lg px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50">Delete</button>
-      <button type="button" id="dEdit" class="rounded-lg bg-teal-700 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-800">Edit</button>
+      <button type="button" data-close class="rounded-lg px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100">Close</button>
     </div>
   </div>
 </div>
@@ -230,7 +346,7 @@
         <input name="bin_location" list="binList" autocomplete="off" class="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500">
         <datalist id="binList"></datalist>
       </label>
-      <label class="block text-sm">
+      <label id="physField" class="block text-sm">
         <span class="font-medium">Physical Stock QTY</span>
         <input name="physical_stock" type="number" inputmode="numeric" min="0" step="1" value="0" class="num mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500 read-only:bg-slate-100 read-only:text-slate-600">
       </label>
@@ -411,6 +527,9 @@ let sb = null; // Supabase client (shared mode)
 const sync = { snapshot: new Map(), version: null, busy: false, dirty: false, online: true, email: '' };
 const FIELDS = ['item_name', 'sku', 'item_ref', 'warehouse', 'bin_location', 'physical_stock', 'verifier1_count', 'verifier2_count', 'active'];
 const state = { search: '', active: 'all', status: 'all', sortCol: 'item_name', sortDir: 'asc' };
+// The phone app (Android APK) hides Physical Stock: the verifiers type their counts into the item card.
+// build-www.mjs sets this to true for the APK; in a browser the page keeps its normal screens.
+const PHONE_APP = !!window.Capacitor;
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => document.querySelectorAll(s);
 
@@ -734,6 +853,10 @@ function render() {
     empty.textContent = t.total ? 'No items match the current filters.' : 'No items yet. Tap “+” to add one, or Import a file.';
   }
   if (!$('#detailModal').classList.contains('hidden') && !fillDetail()) closeModal($('#detailModal'));
+  if (typeof currentSearchItemId !== 'undefined' && currentSearchItemId) {
+    const sr = query('SELECT * FROM v_item_check WHERE id = ?', [currentSearchItemId])[0];
+    if (sr) renderSearchCard(sr, false);
+  }
 
   $$('th[data-sort]').forEach((th) => {
     const base = th.textContent.replace(/ [▲▼]$/, '');
@@ -748,13 +871,25 @@ function render() {
 
 // ---------- Modals ----------
 function openModal(id) { const m = $(id); m.classList.remove('hidden'); m.classList.add('flex'); }
-function closeModal(el) { const m = el.closest('.modal-bg'); m.classList.add('hidden'); m.classList.remove('flex'); }
+function closeModal(el) {
+  const m = typeof el === 'string' ? $(el) : (el?.closest ? el.closest('.modal-bg') : el);
+  if (!m) return;
+  m.classList.add('hidden');
+  m.classList.remove('flex');
+}
 $$('.modal-bg').forEach((m) => {
   m.addEventListener('mousedown', (e) => { if (e.target === m) closeModal(m); });
   m.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', () => closeModal(m)));
 });
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') $$('.modal-bg.flex').forEach(closeModal);
+});
+document.addEventListener('backbutton', (e) => {
+  const openModalEl = document.querySelector('.modal-bg.flex');
+  if (openModalEl) {
+    if (e && e.preventDefault) e.preventDefault();
+    closeModal(openModalEl);
+  }
 });
 
 let confirmAction = null;
@@ -793,9 +928,11 @@ function openItemForm(id = null) {
   const r = id ? query('SELECT * FROM items WHERE id = ?', [id])[0] : null;
   if (id && !r) return;
   $('#itemModalTitle').textContent = r ? 'Edit Item' : 'Add Item';
-  lockedStock = !!r && r.physical_stock > 0;
+  // Phone app: Physical Stock is hidden, so a saved item is always counted by the two verifiers.
+  lockedStock = PHONE_APP ? !!r : !!r && r.physical_stock > 0;
   form.item_name.readOnly = form.sku.readOnly = !!r;
   form.physical_stock.readOnly = lockedStock;
+  $('#physField').classList.toggle('hidden', PHONE_APP);
   $$('#itemForm .req').forEach((s) => s.classList.toggle('hidden', !!r));
   $('#verifyFields').classList.toggle('hidden', !lockedStock);
   $('#verifyFields').classList.toggle('grid', lockedStock);
@@ -869,7 +1006,8 @@ form.addEventListener('submit', (e) => {
     persist();
     closeModal(form);
     render();
-    if (editingId) openDetail(editingId);
+    if (editingId) openInSearch(editingId);
+    else if (sku) { const created = findSku(sku); if (created) openInSearch(created.id); }
   } catch (ex) {
     err.textContent = ex.message;
     err.classList.remove('hidden');
@@ -886,12 +1024,9 @@ function fillDetail() {
   $('#dSku').textContent = r.sku;
   $('#dRef').textContent = r.item_ref || '—';
   $('#dWh').textContent = r.warehouse || '—';
-  $('#dBin').textContent = r.bin_location || '—';
   $('#dPhys').textContent = fmt(r.physical_stock);
-  for (const [el, v] of [['#dV1', r.verifier1_count], ['#dV2', r.verifier2_count]]) {
-    $(el).textContent = v === null ? '—' : fmt(v);
-    $(el).classList.toggle('text-red-600', v !== null && v !== r.physical_stock);
-  }
+  // Verifier counts are editable directly on the card; locked when saved with an Edit button
+  fillCardInputs(r);
   $('#dStatus').innerHTML = badge(r.status);
   $('#dActiveText').textContent = r.active ? 'Yes' : 'No';
   $('#dActive').innerHTML = `
@@ -903,12 +1038,89 @@ function fillDetail() {
 }
 function openDetail(id) {
   detailId = id;
-  if (fillDetail()) openModal('#detailModal');
+  unlocked.verifier1_count = unlocked.verifier2_count = false;
+  if (fillDetail()) {
+    openModal('#detailModal');
+    setTimeout(() => {
+      const firstInput = $('#detailModal input[data-card-field^="verifier"]');
+      if (firstInput) firstInput.focus();
+    }, 100);
+  }
 }
+
+// ----- Typing into the item card -----
+// A verifier count that is still empty is open for typing right away;
+// once a count is saved it is shown as a number with an Edit button, so it cannot be
+// overwritten by accident. A cell is only redrawn when its contents change, so typing is never cut off.
+const unlocked = { verifier1_count: false, verifier2_count: false };
+const CARD_BOX = 'w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500';
+
+function cardCell(el, state, html) {
+  if (el.dataset.cardState === state) return;
+  el.dataset.cardState = state;
+  el.innerHTML = html;
+}
+
+function fillCardInputs(r) {
+  if (PHONE_APP) {
+    cardCell($('#dBin'), `bin:${r.bin_location}`,
+      `<input data-card-field="bin_location" type="text" value="${esc(r.bin_location)}" placeholder="Bin Location" class="${CARD_BOX}">`);
+  } else {
+    $('#dBin').textContent = r.bin_location || '—';
+  }
+  for (const [el, col, v] of [['#dV1', 'verifier1_count', r.verifier1_count], ['#dV2', 'verifier2_count', r.verifier2_count]]) {
+    if (v !== null && !unlocked[col]) {
+      const off = v !== r.physical_stock;
+      cardCell($(el), `lock:${v}:${off}`, `<span class="${off ? 'text-red-600' : ''}">${fmt(v)}</span>
+        <button type="button" data-card-edit="${col}" class="ml-2 rounded-md px-2 py-0.5 text-xs font-semibold text-teal-700 hover:bg-teal-50 active:bg-teal-100">Edit</button>`);
+    } else {
+      cardCell($(el), `open:${v}`,
+        `<input data-card-field="${col}" type="number" inputmode="numeric" min="0" step="1" value="${v === null ? '' : v}" placeholder="Count" class="num ${CARD_BOX}">`);
+    }
+  }
+}
+
+// Saves one field of the open item. A bad number is refused and the stored value comes back.
+function saveCardField(col, raw) {
+  const s = String(raw).trim();
+  let v = s;
+  if (col !== 'bin_location') {
+    v = s === '' ? null : Number(s);
+    if (v !== null && (!Number.isInteger(v) || v < 0)) {
+      toast('A count must be a whole number, 0 or more.', 'error');
+      $(col === 'verifier1_count' ? '#dV1' : '#dV2').dataset.cardState = '';
+      render();
+      fillDetail();
+      return;
+    }
+  }
+  exec(`UPDATE items SET ${col} = ? WHERE id = ?`, [v, detailId]);
+  unlocked[col] = false;
+  persist();
+  render();
+  fillDetail();
+}
+
+$('#detailModal').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-card-edit]');
+  if (!b) return;
+  unlocked[b.dataset.cardEdit] = true;
+  if (fillDetail()) $(`[data-card-field="${b.dataset.cardEdit}"]`).focus();
+});
+$('#detailModal').addEventListener('change', (e) => {
+  const f = e.target.closest('[data-card-field]');
+  if (f && detailId !== null) saveCardField(f.dataset.cardField, f.value);
+});
+$('#detailModal').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    const f = e.target.closest('[data-card-field]');
+    if (f) f.blur();
+  }
+});
 
 function onOpenClick(e) {
   const t = e.target.closest('[data-open]');
-  if (t) openDetail(Number(t.dataset.open));
+  if (t) openInSearch(Number(t.dataset.open));
 }
 $('#itemRows').addEventListener('click', onOpenClick);
 $('#itemList').addEventListener('click', onOpenClick);
@@ -916,9 +1128,9 @@ $('#itemList').addEventListener('click', onOpenClick);
 $('#dActive').addEventListener('click', (e) => {
   if (!e.target.closest('[data-toggle]')) return;
   exec('UPDATE items SET active = 1 - active WHERE id = ?', [detailId]);
-  persist(); render();
+  persist(); render(); fillDetail();
 });
-$('#dEdit').addEventListener('click', () => {
+$('#dEdit')?.addEventListener('click', () => {
   closeModal($('#dEdit'));
   openItemForm(detailId);
 });
@@ -974,17 +1186,303 @@ $('#btnKeepSample').addEventListener('click', () => { lsDel(LS_SAMPLE); render()
 
 // ---------- Tabs ----------
 function showTab(name) {
+  $('#tab-search').classList.toggle('hidden', name !== 'search');
   $('#tab-items').classList.toggle('hidden', name !== 'items');
   $('#tab-sql').classList.toggle('hidden', name !== 'sql');
   $$('.tab-btn').forEach((b) => {
     const on = b.dataset.tab === name;
     b.classList.toggle('bg-white', on);
     b.classList.toggle('text-teal-800', on);
+    b.classList.toggle('shadow-sm', on);
     b.classList.toggle('text-teal-50', !on);
   });
   if (name === 'items') render();
+  if (name === 'search') {
+    if (!currentSearchItemId) {
+      setTimeout(() => $('#tabSearchInput')?.focus(), 60);
+    }
+  }
 }
 $$('.tab-btn').forEach((b) => b.addEventListener('click', () => showTab(b.dataset.tab)));
+
+// ---------- Item Search Tab Logic ----------
+let currentSearchItemId = null;
+const cardUnlocked = { verifier1_count: false, verifier2_count: false };
+
+function renderCardVerifier(col, r, containerSelector) {
+  const box = $(containerSelector);
+  if (!box) return;
+  const val = r[col];
+  const isEditing = (val === null || cardUnlocked[col]);
+
+  if (isEditing) {
+    box.innerHTML = `
+      <div class="flex w-full items-center gap-1.5">
+        <input id="${col === 'verifier1_count' ? 'scV1Input' : 'scV2Input'}"
+          data-sc-col="${col}"
+          type="number" inputmode="numeric" min="0" step="1"
+          value="${val === null ? '' : val}"
+          placeholder="Count"
+          class="num w-full min-w-0 rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-base sm:text-sm font-semibold text-slate-800 focus:border-teal-500 focus:outline-none">
+        <button type="button" data-sc-save="${col}"
+          class="shrink-0 rounded-lg bg-teal-700 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-teal-800 active:bg-teal-900 shadow-sm">
+          Save
+        </button>
+      </div>`;
+  } else {
+    const off = val !== r.physical_stock;
+    box.innerHTML = `
+      <div class="flex w-full items-center justify-between">
+        <span class="num text-lg sm:text-xl font-bold ${off ? 'text-red-600' : 'text-slate-800'}">
+          ${fmt(val)}
+        </span>
+        <button type="button" data-sc-edit="${col}"
+          class="shrink-0 rounded-md border border-slate-300 bg-white px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50 active:bg-slate-100 shadow-sm">
+          Edit
+        </button>
+      </div>`;
+  }
+}
+
+function renderSearchCard(r, setFocus = true) {
+  if (!r) return;
+  currentSearchItemId = r.id;
+  $('#searchPrompt').classList.add('hidden');
+  $('#searchMatchesCard').classList.add('hidden');
+  const card = $('#searchItemCard');
+  card.classList.remove('hidden');
+
+  $('#scName').textContent = r.item_name;
+  $('#scSku').textContent = r.sku;
+  $('#scRef').textContent = r.item_ref || '—';
+  $('#scWh').textContent = r.warehouse || '—';
+  $('#scBin').textContent = r.bin_location || '—';
+
+  renderCardVerifier('verifier1_count', r, '#scV1Content');
+  renderCardVerifier('verifier2_count', r, '#scV2Content');
+
+  $('#scStatus').innerHTML = badge(r.status);
+  $('#scActiveText').textContent = r.active ? 'Yes' : 'No';
+  $('#scBtnToggleActive').textContent = r.active ? 'Mark inactive' : 'Mark active';
+
+  if (setFocus) {
+    setTimeout(() => {
+      const v1 = $('#scV1Input');
+      const v2 = $('#scV2Input');
+      if (v1) { v1.focus(); v1.select(); }
+      else if (v2) { v2.focus(); v2.select(); }
+    }, 60);
+  }
+}
+
+function saveSearchCardVerifier(col) {
+  if (!currentSearchItemId) return;
+  const input = $(col === 'verifier1_count' ? '#scV1Input' : '#scV2Input');
+  if (!input) return;
+  const raw = input.value.trim();
+  let v = null;
+  if (raw !== '') {
+    v = Number(raw.replace(/,/g, ''));
+    if (!Number.isInteger(v) || v < 0) {
+      toast('Count must be a whole number, 0 or more.', 'error');
+      input.focus();
+      return;
+    }
+  }
+  exec(`UPDATE items SET ${col} = ? WHERE id = ?`, [v, currentSearchItemId]);
+  cardUnlocked[col] = false;
+  persist();
+  render();
+  const updated = query('SELECT * FROM v_item_check WHERE id = ?', [currentSearchItemId])[0];
+  if (updated) {
+    renderSearchCard(updated, false);
+    toast(`Saved ${col === 'verifier1_count' ? 'Verifier 1' : 'Verifier 2'}`);
+    if (col === 'verifier1_count') {
+      setTimeout(() => {
+        const v2 = $('#scV2Input');
+        if (v2) { v2.focus(); v2.select(); }
+      }, 50);
+    }
+  }
+}
+
+function unlockSearchCardVerifier(col) {
+  if (!currentSearchItemId) return;
+  cardUnlocked[col] = true;
+  const r = query('SELECT * FROM v_item_check WHERE id = ?', [currentSearchItemId])[0];
+  if (r) {
+    renderSearchCard(r, false);
+    setTimeout(() => {
+      const input = $(col === 'verifier1_count' ? '#scV1Input' : '#scV2Input');
+      if (input) { input.focus(); input.select(); }
+    }, 50);
+  }
+}
+
+function clearSearch() {
+  currentSearchItemId = null;
+  cardUnlocked.verifier1_count = false;
+  cardUnlocked.verifier2_count = false;
+  $('#tabSearchInput').value = '';
+  $('#btnClearSearch').classList.add('hidden');
+  $('#tabSearchMsg').textContent = '';
+  $('#tabSearchMsg').className = 'mt-2 text-xs sm:text-sm font-medium empty:hidden';
+  $('#searchItemCard').classList.add('hidden');
+  $('#searchMatchesCard').classList.add('hidden');
+  $('#searchPrompt').classList.remove('hidden');
+  $('#searchPromptText').textContent = 'Scan or search an item';
+  $('#searchPromptSub').textContent = 'Scan a barcode or enter SKU/Item Name to verify stock count.';
+}
+
+function renderSearchMatches(rows) {
+  const card = $('#searchMatchesCard');
+  card.classList.remove('hidden');
+  $('#searchMatchesList').innerHTML = rows.map((r) => `
+    <li>
+      <button type="button" data-match-id="${r.id}" class="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-slate-50 active:bg-slate-100 ${r.active ? '' : 'opacity-50'}">
+        <span class="min-w-0 flex-1">
+          <span class="line-clamp-2 block font-semibold text-slate-800 text-sm">${esc(r.item_name)}</span>
+          <span class="mt-0.5 block break-all font-mono text-xs text-slate-500">${esc(r.sku)}</span>
+          <span class="block break-all text-xs text-slate-400">Ref: ${r.item_ref ? esc(r.item_ref) : '—'} · Bin: ${r.bin_location ? esc(r.bin_location) : '—'}</span>
+        </span>
+        <span class="shrink-0">${badge(r.status)}</span>
+        <span class="text-xl text-slate-300">›</span>
+      </button>
+    </li>
+  `).join('');
+}
+
+function doTabSearch() {
+  const q = $('#tabSearchInput').value.trim();
+  if (!q) {
+    clearSearch();
+    return;
+  }
+  $('#btnClearSearch').classList.remove('hidden');
+
+  // Exact SKU match first (barcode scanner)
+  const exact = query('SELECT * FROM v_item_check WHERE UPPER(sku) = UPPER(?)', [q])[0];
+  if (exact) {
+    $('#tabSearchMsg').textContent = `Showing exact SKU match: ${exact.sku}`;
+    $('#tabSearchMsg').className = 'mt-2 text-xs sm:text-sm text-teal-700 font-medium';
+    cardUnlocked.verifier1_count = false;
+    cardUnlocked.verifier2_count = false;
+    renderSearchCard(exact);
+    return;
+  }
+
+  // Broader search
+  const like = `%${q}%`;
+  const rows = query(
+    `SELECT * FROM v_item_check WHERE sku LIKE ? OR item_name LIKE ? OR item_ref LIKE ? OR warehouse LIKE ? OR bin_location LIKE ? ORDER BY item_name COLLATE NOCASE LIMIT 50`,
+    [like, like, like, like, like]
+  );
+
+  if (rows.length === 1) {
+    $('#tabSearchMsg').textContent = `Found: ${rows[0].sku} (${rows[0].item_name})`;
+    $('#tabSearchMsg').className = 'mt-2 text-xs sm:text-sm text-teal-700 font-medium';
+    cardUnlocked.verifier1_count = false;
+    cardUnlocked.verifier2_count = false;
+    renderSearchCard(rows[0]);
+  } else if (rows.length > 1) {
+    currentSearchItemId = null;
+    $('#searchItemCard').classList.add('hidden');
+    $('#searchPrompt').classList.add('hidden');
+    $('#tabSearchMsg').textContent = `Found ${rows.length} matching items. Tap to select:`;
+    $('#tabSearchMsg').className = 'mt-2 text-xs sm:text-sm text-slate-700 font-medium';
+    renderSearchMatches(rows);
+  } else {
+    currentSearchItemId = null;
+    $('#searchItemCard').classList.add('hidden');
+    $('#searchMatchesCard').classList.add('hidden');
+    $('#searchPrompt').classList.remove('hidden');
+    $('#searchPromptText').textContent = 'No item found';
+    $('#searchPromptSub').textContent = `No items match "${q}". Try another SKU or item name.`;
+    $('#tabSearchMsg').textContent = `No match found for "${q}"`;
+    $('#tabSearchMsg').className = 'mt-2 text-xs sm:text-sm text-red-600 font-medium';
+  }
+}
+
+function openInSearch(id) {
+  const r = query('SELECT * FROM v_item_check WHERE id = ?', [id])[0];
+  if (!r) return;
+  showTab('search');
+  $('#tabSearchInput').value = r.sku;
+  $('#btnClearSearch').classList.remove('hidden');
+  $('#tabSearchMsg').textContent = `Showing: ${r.sku} (${r.item_name})`;
+  $('#tabSearchMsg').className = 'mt-2 text-xs sm:text-sm text-teal-700 font-medium';
+  cardUnlocked.verifier1_count = false;
+  cardUnlocked.verifier2_count = false;
+  renderSearchCard(r);
+}
+
+$('#btnSearchSubmit').addEventListener('click', doTabSearch);
+$('#tabSearchInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    doTabSearch();
+  }
+});
+$('#tabSearchInput').addEventListener('input', (e) => {
+  const has = !!e.target.value.trim();
+  $('#btnClearSearch').classList.toggle('hidden', !has);
+});
+$('#btnClearSearch').addEventListener('click', () => {
+  clearSearch();
+  $('#tabSearchInput').focus();
+});
+$('#btnSearchClear')?.addEventListener('click', () => {
+  clearSearch();
+  $('#tabSearchInput').focus();
+});
+$('#searchMatchesList').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-match-id]');
+  if (!b) return;
+  const id = Number(b.dataset.matchId);
+  openInSearch(id);
+});
+$('#searchItemCard').addEventListener('click', (e) => {
+  const saveBtn = e.target.closest('[data-sc-save]');
+  if (saveBtn) {
+    saveSearchCardVerifier(saveBtn.dataset.scSave);
+    return;
+  }
+  const editBtn = e.target.closest('[data-sc-edit]');
+  if (editBtn) {
+    unlockSearchCardVerifier(editBtn.dataset.scEdit);
+    return;
+  }
+});
+$('#searchItemCard').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    const input = e.target.closest('[data-sc-col]');
+    if (input) {
+      e.preventDefault();
+      saveSearchCardVerifier(input.dataset.scCol);
+    }
+  }
+});
+$('#scBtnToggleActive').addEventListener('click', () => {
+  if (!currentSearchItemId) return;
+  exec('UPDATE items SET active = 1 - active WHERE id = ?', [currentSearchItemId]);
+  persist();
+  render();
+  const updated = query('SELECT * FROM v_item_check WHERE id = ?', [currentSearchItemId])[0];
+  if (updated) renderSearchCard(updated, false);
+});
+$('#scBtnDelete').addEventListener('click', () => {
+  if (!currentSearchItemId) return;
+  const id = currentSearchItemId;
+  const r = query('SELECT item_name, sku FROM items WHERE id = ?', [id])[0];
+  if (!r) return;
+  confirmBox('Delete item?', `${r.item_name} (${r.sku}) will be permanently removed.`, 'Delete', () => {
+    exec('DELETE FROM items WHERE id = ?', [id]);
+    persist();
+    render();
+    toast(`Deleted ${r.sku}`);
+    clearSearch();
+  });
+});
 
 // ---------- Export ----------
 function exportRows() {
@@ -1291,6 +1789,13 @@ $('#fabAdd').addEventListener('click', () => openItemForm());
 
 // ---------- Init ----------
 async function init() {
+  if (PHONE_APP) {
+    // No Physical Stock on the phone, so the four remaining cards fill the two columns evenly.
+    $('#statPhysicalTile').classList.add('hidden');
+    $('#statMismatchTile').classList.remove('col-span-2');
+    $('#dPhysTile').classList.add('hidden');
+    $('#dCounts').classList.replace('grid-cols-3', 'grid-cols-2');
+  }
   if (typeof initSqlJs === 'undefined' || typeof XLSX === 'undefined') {
     $('#loadingText').innerHTML = '<b class="text-red-600">Could not load the app libraries.</b><br>Check your internet connection and reload the page.';
     $('#loading').querySelector('.animate-spin').remove();
@@ -1328,7 +1833,7 @@ async function init() {
     window.addEventListener('focus', pollRemote);
     document.addEventListener('visibilitychange', pollRemote);
     $('#loading').remove();
-    showTab('items');
+    showTab('search');
     return;
   }
   const saved = lsGet(LS_DB);
@@ -1343,7 +1848,7 @@ async function init() {
     persist();
   }
   $('#loading').remove();
-  showTab('items');
+  showTab('search');
 }
 init();
 </script>

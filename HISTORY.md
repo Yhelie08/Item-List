@@ -2,6 +2,26 @@
 
 Changes to Item Checker, newest first.
 
+## 2026-10-06: Phone resolution adaptation & Item Search workflow (Desktop & APK)
+
+- **Phone resolution responsiveness:**
+  - Added `viewport-fit=cover` and safe-area inset padding for modern mobile phone screens.
+  - Header navigation adapts responsively: on phone resolutions (360px–412px), the tabs become a full-width, touch-friendly segmented control right beneath the header bar for easy thumb switching between `Item Search` and `All Items`.
+  - Item Search card scales dynamically across narrow screen widths without clipping or horizontal overflow.
+  - **Auto-adjusting Search & Clear buttons:** In `Item Search`, the `[ Search ]` and `[ Clear ]` buttons automatically adapt and wrap on narrow/phone window widths, remaining centered and accessible without getting clipped.
+  - Verifier count inputs support `inputmode="numeric"` to summon the phone's numeric keypad directly.
+  - Stat cards in `All Items` cleanly form a 2x2 grid on mobile phones (Total Items, Active, To count, Mismatch).
+- **Removed Physical Stock from Item Card:** Physical Stock is no longer visible on the item verification card/modal in both the desktop Tkinter app (`ItemChecker.pyw`) and mobile/APK app (`ItemChecker.html`), maintaining blind counting verification integrity.
+- **Auto edit mode for empty counts:** When opening an item card, any verifier without a saved count (`None`/empty) opens directly in an entry field (`Edit mode`) with an inline Save button.
+- **Locked counts with inline edit:** When a verifier has a saved count, it displays as a formatted number (highlighted in red if differing from physical stock) with an `Edit` button to unlock and modify it.
+- **Fast keyboard workflow:** Pressing `<Enter>` in Verifier 1 saves the value and immediately moves focus to Verifier 2 if it is also in edit mode.
+- **Instant result calculation:** Saving counts immediately recalculates and displays status (`MATCH`, `MISMATCH`, `TO COUNT`) in real time.
+- **New "Item Search" tab & embedded card view:** Added a dedicated "Item Search" tab featuring a fast scan/search bar at the top. Searching by SKU (or scanning a barcode) immediately renders the item card directly inside the tab with direct count inputs and no Close button.
+- **Renamed "Items" to "All Items":** The full imported item list, table view, stat summary counters, and filters are now located in the "All Items" tab.
+- **Hidden SQL Console tab:** The SQL Console tab is hidden from the main tab interface.
+- **Removed bottom Edit button:** Removed the bottom `Edit` button from the item card/modal. Each verifier has its own inline `Edit`/`Save` controls directly in its tile, keeping the bottom clean with only `Delete` (no Close button in embedded search card).
+- **Android APK rebuilt:** `ItemChecker.apk` recompiled and synced with updated web assets.
+
 ## 2026-09-30: Stock count with two verifiers
 
 - **Committed Stock and Available are removed** from the form, item card, stat cards, import and export. Older databases keep the column, unused.

@@ -25,13 +25,12 @@ Item Name, SKU, ItemRef (optional), Warehouse (optional), Bin Location (optional
 - Physical Stock **more than 0**: Physical Stock is read-only; enter Verifier 1 (Count) and Verifier 2 (Count). A blank count means not counted yet.
 - To correct a Physical Stock that is already more than 0, import a file or use the SQL Console.
 
-## Using the list
+## Using the app
 
-- The list shows only **Item Name, SKU and ItemRef**. Search matches those, Warehouse and Bin Location.
-- Open an item to see its card: Item Name, SKU, ItemRef, Warehouse, Bin Location, Physical Stock, Verifier 1, Verifier 2, Count result and Active, with Edit, Mark active/inactive and Delete.
-  - **Desktop:** double-click the item, or select it and press Enter or **View**.
-  - **Web / phone:** tap the item. On a phone, add items with the round **+** button.
-- Both apps adjust to the screen size: the web page fits phones, and the desktop window can be made as narrow as 380 px.
+- **Item Search tab:** Fast scanning and searching by SKU, barcode, or name. Searching or scanning immediately displays the item's card embedded in the view with inline Verifier 1 & Verifier 2 count entry, instant count result calculation (`MATCH`, `MISMATCH`, `TO COUNT`), Active toggle, and Delete.
+- **Blind verification:** Physical stock quantity is hidden from the verifier card to ensure unbiased stock counts. If a count is not yet saved, it opens in edit mode with numeric keypad support on phones.
+- **All Items tab:** Shows all imported items (`Item Name`, `SKU`, `ItemRef`), stat summary counters (`Total Items`, `Active`, `To count`, `Mismatch`), filters, and table/list views. Tapping or double-clicking any item switches to `Item Search` and opens its card.
+- **Phone resolution adaptation:** Both the desktop app and the Android APK/web app automatically adjust across phone and narrow resolutions down to 360 px width. Search and Clear buttons wrap automatically without clipping, and tabs form a full-width mobile segmented control.
 
 ## Files
 

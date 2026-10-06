@@ -537,6 +537,14 @@ class Store:
             params += list(counts)
         self.conn.execute(f'UPDATE items SET {", ".join(sets)} WHERE id=?', (*params, item_id))
 
+    def update_verifier_count(self, item_id, field, val):
+        """Update a single verifier count (verifier1_count or verifier2_count). None means not counted yet."""
+        if field not in ('verifier1_count', 'verifier2_count'):
+            raise ValueError(f'Invalid field: {field}')
+        if val is not None:
+            check_qty('Verifier Count', val)
+        self.conn.execute(f'UPDATE items SET {field} = ? WHERE id = ?', (val, item_id))
+
     def toggle_active(self, item_id):
         self.conn.execute('UPDATE items SET active = 1 - active WHERE id = ?', (item_id,))
 
@@ -749,38 +757,57 @@ def today():
     return datetime.date.today().isoformat()
 
 
-def flow(frame, widgets, gap=6):
+def flow(frame, widgets, gap=6, align='left'):
     """Lay widgets out left to right, wrapping onto a new row when the frame gets too narrow."""
     def relayout(e=None):
         width = frame.winfo_width()
         if width <= 1:
             return
-        x = y = row_h = 0
+        rows = []
+        cur_row = []
+        cur_w = 0
         for w in widgets:
-            ww, wh = w.winfo_reqwidth(), w.winfo_reqheight()
-            if x and x + ww > width:
-                x, y, row_h = 0, y + row_h + gap, 0
-            w.place(x=x, y=y)
-            x += ww + gap
-            row_h = max(row_h, wh)
-        if int(frame.cget('height')) != y + row_h:
-            frame.configure(height=y + row_h)
+            ww = w.winfo_reqwidth()
+            if cur_row and cur_w + gap + ww > width:
+                rows.append((cur_row, cur_w))
+                cur_row = [w]
+                cur_w = ww
+            else:
+                cur_row.append(w)
+                cur_w += (gap if cur_row else 0) + ww
+        if cur_row:
+            rows.append((cur_row, cur_w))
+
+        y = 0
+        for row_widgets, row_w in rows:
+            row_h = max(w.winfo_reqheight() for w in row_widgets)
+            x = max(0, (width - row_w) // 2) if align == 'center' else 0
+            for w in row_widgets:
+                w.place(x=x, y=y)
+                x += w.winfo_reqwidth() + gap
+            y += row_h + gap
+        total_h = max(0, y - gap)
+        if int(frame.cget('height')) != total_h:
+            frame.configure(height=total_h)
     frame.bind('<Configure>', relayout, add='+')
     for w in widgets:  # e.g. a label whose text got longer
         w.bind('<Configure>', relayout, add='+')
     frame.after_idle(relayout)
 
 
-class ItemCard(tk.Toplevel):
-    """Every field of one item, with Edit / Mark active / Delete. Opened from the item list."""
+class ItemCardFrame(tk.Frame):
+    """Every field of one item, with direct verifier counts entry, toggle active, and delete."""
 
-    def __init__(self, app, item_id):
-        super().__init__(app)
-        self.app, self.item_id = app, item_id
-        self.title('Item')
-        self.configure(bg=CARD, padx=18, pady=14)
-        self.transient(app)
-        self.minsize(320, 0)
+    def __init__(self, parent, app, show_close=False, on_deleted=None):
+        super().__init__(parent, bg=CARD, padx=18, pady=14,
+                         highlightbackground='#cbd5e1', highlightthickness=1)
+        self.app = app
+        self.show_close = show_close
+        self.on_deleted = on_deleted
+        self.item_id = None
+        self.unlocked = {'verifier1_count': False, 'verifier2_count': False}
+        self.stat_boxes = {}
+        self.v_entries = {}
         self.columnconfigure(0, weight=1)
 
         self.l_name = tk.Label(self, bg=CARD, fg='#0f172a', font=('Segoe UI Semibold', 13), anchor='w', justify='left')
@@ -801,15 +828,15 @@ class ItemCard(tk.Toplevel):
 
         stats = tk.Frame(self, bg=CARD)
         stats.grid(row=10, column=0, sticky='we', pady=(12, 0))
-        self.stat = {}
-        for i, (key, title) in enumerate((('physical_stock', 'Physical Stock'), ('verifier1_count', 'Verifier 1'),
+        for i, (key, title) in enumerate((('verifier1_count', 'Verifier 1'),
                                           ('verifier2_count', 'Verifier 2'))):
             stats.columnconfigure(i, weight=1, uniform='s')
             box = tk.Frame(stats, bg=BG, padx=10, pady=8)
-            box.grid(row=0, column=i, sticky='nsew', padx=(0 if i == 0 else 6, 0))
+            box.grid(row=0, column=i, sticky='nsew', padx=(0 if i == 0 else 8, 0))
             tk.Label(box, text=title, bg=BG, fg=MUTED, font=('Segoe UI', 9)).pack(anchor='w')
-            self.stat[key] = tk.Label(box, bg=BG, font=('Segoe UI Semibold', 16))
-            self.stat[key].pack(anchor='w')
+            content = tk.Frame(box, bg=BG)
+            content.pack(fill='x', expand=True, pady=(4, 0))
+            self.stat_boxes[key] = content
 
         res = tk.Frame(self, bg=BG, padx=10, pady=6)
         res.grid(row=11, column=0, sticky='we', pady=(8, 0))
@@ -828,64 +855,176 @@ class ItemCard(tk.Toplevel):
         btns = tk.Frame(self, bg=CARD)
         btns.grid(row=13, column=0, sticky='we', pady=(14, 0))
         ttk.Button(btns, text='Delete', command=self.delete).pack(side='left')
-        ttk.Button(btns, text='Edit', style='Accent.TButton', command=self.edit).pack(side='right')
-        ttk.Button(btns, text='Close', command=self.destroy).pack(side='right', padx=(0, 6))
+        if self.show_close:
+            self.b_close = ttk.Button(btns, text='Close', command=self.close)
+            self.b_close.pack(side='right')
+        else:
+            self.b_close = None
 
-        self.bind('<Escape>', lambda e: self.destroy())
         self.bind('<Configure>', self.rewrap)
-        if not self.fill():
-            return
-        self.update_idletasks()
-        w = max(self.winfo_reqwidth(), 420)
-        x = app.winfo_rootx() + (app.winfo_width() - w) // 2
-        y = app.winfo_rooty() + (app.winfo_height() - self.winfo_reqheight()) // 3
-        self.geometry(f'{w}x{self.winfo_reqheight()}+{max(x, 0)}+{max(y, 0)}')
-        self.grab_set()
-        self.focus_set()
 
     def rewrap(self, e=None):
         width = max(self.winfo_width() - 40, 200)
         for lbl in (self.l_name, self.l_sku, self.l_ref, self.l_wh, self.l_bin):
             lbl.configure(wraplength=width)
 
+    def load_item(self, item_id):
+        self.item_id = item_id
+        self.unlocked['verifier1_count'] = False
+        self.unlocked['verifier2_count'] = False
+        ok = self.fill()
+        if ok:
+            def set_initial_focus():
+                if 'verifier1_count' in self.v_entries:
+                    self.v_entries['verifier1_count'].focus_set()
+                    self.v_entries['verifier1_count'].selection_range(0, 'end')
+                elif 'verifier2_count' in self.v_entries:
+                    self.v_entries['verifier2_count'].focus_set()
+                    self.v_entries['verifier2_count'].selection_range(0, 'end')
+            self.after(50, set_initial_focus)
+        return ok
+
+    def render_verifiers(self, r):
+        for key in ('verifier1_count', 'verifier2_count'):
+            box = self.stat_boxes[key]
+            for child in box.winfo_children():
+                child.destroy()
+            val = r[key]
+            in_edit = (val is None or self.unlocked[key])
+            if in_edit:
+                entry = ttk.Entry(box, font=('Segoe UI', 10), width=8)
+                if val is not None:
+                    entry.insert(0, str(val))
+                entry.pack(side='left', fill='x', expand=True)
+                self.v_entries[key] = entry
+                entry.bind('<Return>', lambda e, k=key: self.on_entry_enter(k))
+                entry.bind('<KP_Enter>', lambda e, k=key: self.on_entry_enter(k))
+
+                btn_save = ttk.Button(box, text='Save', width=5,
+                                      command=lambda k=key: self.save_field(k))
+                btn_save.pack(side='right', padx=(4, 0))
+            else:
+                self.v_entries.pop(key, None)
+                off = (val != r['physical_stock'])
+                lbl = tk.Label(box, text=f'{val:,}', bg=BG,
+                               font=('Segoe UI Semibold', 16), fg=RED if off else '#0f172a')
+                lbl.pack(side='left')
+                btn_edit = ttk.Button(box, text='Edit', width=5,
+                                      command=lambda k=key: self.unlock_field(k))
+                btn_edit.pack(side='right')
+
+    def unlock_field(self, key):
+        self.unlocked[key] = True
+        r = self.app.store.get_check(self.item_id)
+        if r:
+            self.render_verifiers(r)
+            if key in self.v_entries:
+                self.v_entries[key].focus_set()
+                self.v_entries[key].selection_range(0, 'end')
+
+    def save_field(self, key):
+        entry = self.v_entries.get(key)
+        if not entry:
+            return True
+        raw = entry.get().strip()
+        if raw == '':
+            val = None
+        else:
+            try:
+                clean = raw.replace(',', '').replace(' ', '')
+                val = int(clean)
+                if val < 0:
+                    raise ValueError()
+            except ValueError:
+                messagebox.showerror('Invalid Count', 'Verifier count must be a whole number, 0 or more.', parent=self)
+                entry.focus_set()
+                entry.selection_range(0, 'end')
+                return False
+        try:
+            self.app.store.update_verifier_count(self.item_id, key, val)
+        except Exception as ex:
+            messagebox.showerror('Save Error', str(ex), parent=self)
+            return False
+        self.unlocked[key] = False
+        self.app.saved()
+        self.fill()
+        return True
+
+    def on_entry_enter(self, key):
+        if self.save_field(key):
+            other_key = 'verifier2_count' if key == 'verifier1_count' else 'verifier1_count'
+            if other_key in self.v_entries:
+                self.v_entries[other_key].focus_set()
+                self.v_entries[other_key].selection_range(0, 'end')
+
     def fill(self):
+        if not self.item_id:
+            return False
         r = self.app.store.get_check(self.item_id)
         if not r:
-            self.destroy()
             return False
         self.l_name.config(text=r['item_name'])
         self.l_sku.config(text=r['sku'])
         self.l_ref.config(text=r['item_ref'] or '—')
         self.l_wh.config(text=r['warehouse'] or '—')
         self.l_bin.config(text=r['bin_location'] or '—')
-        for key, lbl in self.stat.items():
-            v = r[key]
-            off = key != 'physical_stock' and v is not None and v != r['physical_stock']
-            lbl.config(text='—' if v is None else f'{v:,}', fg=RED if off else '#0f172a')
+        self.render_verifiers(r)
         self.l_status.config(text=r['status'], fg=STATUS_COLORS[r['status']])
         self.l_active.config(text='Yes' if r['active'] else 'No', fg=TEAL if r['active'] else MUTED)
         self.b_toggle.config(text='Mark inactive' if r['active'] else 'Mark active')
         return True
 
     def toggle(self):
+        if not self.item_id:
+            return
         self.app.store.toggle_active(self.item_id)
         self.app.saved()
         self.fill()
 
-    def edit(self):
-        item = self.app.store.get(self.item_id)
-        self.destroy()
-        if item:
-            ItemDialog(self.app, item, reopen_card=True)
-
     def delete(self):
+        if not self.item_id:
+            return
         r = self.app.store.get(self.item_id)
         if r and messagebox.askyesno('Delete item?', f'{r["item_name"]} ({r["sku"]}) will be permanently removed.',
                                      icon='warning', parent=self):
-            self.destroy()
-            self.app.store.delete(self.item_id)
+            deleted_id = self.item_id
+            self.item_id = None
+            self.app.store.delete(deleted_id)
             self.app.saved()
             self.app.set_status(f'Deleted {r["sku"]}')
+            if self.on_deleted:
+                self.on_deleted(deleted_id)
+            else:
+                self.close()
+
+    def close(self):
+        master = self.winfo_toplevel()
+        if master != self.app:
+            master.destroy()
+
+
+class ItemCard(tk.Toplevel):
+    """Every field of one item, opened from the item list as popup."""
+
+    def __init__(self, app, item_id):
+        super().__init__(app)
+        self.app, self.item_id = app, item_id
+        self.title('Item')
+        self.configure(bg=CARD)
+        self.transient(app)
+        self.minsize(320, 0)
+        self.card = ItemCardFrame(self, app, show_close=True, on_deleted=lambda _: self.destroy())
+        self.card.pack(fill='both', expand=True)
+        if not self.card.load_item(item_id):
+            self.destroy()
+            return
+        self.bind('<Escape>', lambda e: self.destroy())
+        self.update_idletasks()
+        w = max(self.winfo_reqwidth(), 440)
+        x = app.winfo_rootx() + (app.winfo_width() - w) // 2
+        y = app.winfo_rooty() + (app.winfo_height() - self.winfo_reqheight()) // 3
+        self.geometry(f'{w}x{self.winfo_reqheight()}+{max(x, 0)}+{max(y, 0)}')
+        self.grab_set()
 
 
 class ItemDialog(tk.Toplevel):
@@ -1300,12 +1439,180 @@ class App(tk.Tk):
         self.body.pack(fill='both', expand=True)
         self.nb = ttk.Notebook(self.body)
         self.nb.pack(fill='both', expand=True)
+        self.tab_search = tk.Frame(self.nb, bg=BG, padx=14, pady=10)
         self.tab_items = tk.Frame(self.nb, bg=BG, padx=10, pady=10)
         self.tab_sql = tk.Frame(self.nb, bg=BG, padx=10, pady=10)
-        self.nb.add(self.tab_items, text='Items')
-        self.nb.add(self.tab_sql, text='SQL Console')
+        self.nb.add(self.tab_search, text='Item Search')
+        self.nb.add(self.tab_items, text='All Items')
+        # SQL Console hidden for now:
+        # self.nb.add(self.tab_sql, text='SQL Console')
+        self.build_search_tab()
         self.build_items_tab()
         self.build_sql_tab()
+
+    def build_search_tab(self):
+        t = self.tab_search
+
+        # Search bar at top
+        search_bar = tk.Frame(t, bg=BG)
+        search_bar.pack(fill='x', pady=(4, 6))
+
+        search_row = tk.Frame(search_bar, bg=BG)
+        search_row.pack(fill='x')
+
+        lbl_scan = tk.Label(search_row, text='Scan / Search Item:', bg=BG, fg='#0f172a',
+                            font=('Segoe UI Semibold', 11))
+
+        self.v_item_search = tk.StringVar()
+        self.e_item_search = ttk.Entry(search_row, textvariable=self.v_item_search,
+                                       font=('Segoe UI', 11), width=24)
+        self.e_item_search.bind('<Return>', lambda e: self.do_item_search())
+        self.e_item_search.bind('<KP_Enter>', lambda e: self.do_item_search())
+
+        btn_box = tk.Frame(search_row, bg=BG)
+        btn_search = ttk.Button(btn_box, text='Search', style='Accent.TButton',
+                                command=self.do_item_search)
+        btn_search.pack(side='left')
+
+        btn_clear = ttk.Button(btn_box, text='Clear', command=self.clear_item_search)
+        btn_clear.pack(side='left', padx=(4, 0))
+
+        flow(search_row, [lbl_scan, self.e_item_search, btn_box], gap=8, align='center')
+
+        self.l_search_msg = tk.Label(search_bar, text='', bg=BG, fg=MUTED, font=('Segoe UI', 9))
+        self.l_search_msg.pack(pady=(4, 0))
+
+        # Main content area
+        self.search_content = tk.Frame(t, bg=BG)
+        self.search_content.pack(fill='both', expand=True)
+
+        # 1. Empty state
+        self.search_empty = tk.Frame(self.search_content, bg=BG)
+        self.search_empty.pack(fill='both', expand=True, pady=40)
+        tk.Label(self.search_empty, text='No item selected', bg=BG, fg=MUTED,
+                 font=('Segoe UI Semibold', 13)).pack()
+        tk.Label(self.search_empty,
+                 text='Scan a barcode or enter SKU / Item Name above to inspect and enter counts.',
+                 bg=BG, fg=MUTED, font=('Segoe UI', 10)).pack(pady=(6, 0))
+
+        # 2. Multiple matches selector
+        self.search_matches = tk.Frame(self.search_content, bg=BG)
+        tk.Label(self.search_matches, text='Multiple matches found — double-click an item to inspect:',
+                 bg=BG, fg='#0f172a', font=('Segoe UI Semibold', 10)).pack(anchor='w', pady=(0, 6))
+        match_table = tk.Frame(self.search_matches, bg=BG)
+        match_table.pack(fill='both', expand=True)
+        self.match_cols = [('item_name', 'Item Name', 0.45), ('sku', 'SKU', 0.25),
+                           ('bin_location', 'Bin Location', 0.15), ('status', 'Count Result', 0.15)]
+        self.match_tree = ttk.Treeview(match_table, columns=[c[0] for c in self.match_cols],
+                                       show='headings', selectmode='browse', height=8)
+        for key, title, _ in self.match_cols:
+            self.match_tree.heading(key, text=title, anchor='w')
+            self.match_tree.column(key, width=120, anchor='w')
+        sb = ttk.Scrollbar(match_table, command=self.match_tree.yview)
+        self.match_tree.configure(yscrollcommand=sb.set)
+        self.match_tree.pack(side='left', fill='both', expand=True)
+        sb.pack(side='right', fill='y')
+        self.match_tree.bind('<Double-1>', lambda e: self.on_match_selected())
+        self.match_tree.bind('<Return>', lambda e: self.on_match_selected())
+
+        # 3. Card view
+        self.search_card_wrap = tk.Frame(self.search_content, bg=BG)
+        self.card_sub = tk.Frame(self.search_card_wrap, bg=BG)
+        self.card_sub.pack(anchor='n', pady=6)
+        self.card_sub.columnconfigure(0, weight=1)
+        self.search_card = ItemCardFrame(self.card_sub, app=self, show_close=False,
+                                         on_deleted=self.on_search_card_deleted)
+        self.search_card.grid(row=0, column=0, sticky='nsew')
+
+        def on_card_wrap_resize(e):
+            avail = max(280, e.width - 24)
+            w = max(280, min(avail, 460))
+            self.card_sub.columnconfigure(0, minsize=w)
+        self.search_card_wrap.bind('<Configure>', on_card_wrap_resize)
+
+    def do_item_search(self):
+        query_text = self.v_item_search.get().strip()
+        if not query_text:
+            self.clear_item_search()
+            return
+
+        # 1. Exact match on SKU first
+        exact = self.store.find_sku(query_text)
+        if exact:
+            self.show_search_item(exact['id'])
+            self.l_search_msg.config(text=f'Showing exact SKU match: {exact["sku"]}', fg=TEAL)
+            return
+
+        # 2. General search across fields
+        like = '%' + re.sub(r'([\\%_])', r'\\\1', query_text) + '%'
+        rows = self.store.conn.execute(
+            "SELECT id, item_name, sku, item_ref, warehouse, bin_location, status "
+            "FROM v_item_check WHERE (sku LIKE ? ESCAPE '\\' OR item_name LIKE ? ESCAPE '\\' "
+            "OR item_ref LIKE ? ESCAPE '\\' OR warehouse LIKE ? ESCAPE '\\' OR bin_location LIKE ? ESCAPE '\\') "
+            "ORDER BY item_name COLLATE NOCASE LIMIT 50",
+            (like, like, like, like, like)
+        ).fetchall()
+
+        if len(rows) == 1:
+            self.show_search_item(rows[0]['id'])
+            self.l_search_msg.config(text=f'Found: {rows[0]["sku"]} ({rows[0]["item_name"]})', fg=TEAL)
+        elif len(rows) > 1:
+            self.show_search_matches(rows)
+            self.l_search_msg.config(text=f'Found {len(rows)} matching items. Select one below.', fg='#0f172a')
+        else:
+            self.show_search_empty()
+            self.l_search_msg.config(text=f'No match found for "{query_text}"', fg=RED)
+
+    def show_search_item(self, item_id):
+        self.search_empty.pack_forget()
+        self.search_matches.pack_forget()
+        self.search_card_wrap.pack_forget()
+        if self.search_card.load_item(item_id):
+            self.search_card_wrap.pack(fill='both', expand=True)
+
+    def show_search_matches(self, rows):
+        self.search_empty.pack_forget()
+        self.search_card_wrap.pack_forget()
+        self.search_matches.pack_forget()
+        self.match_tree.delete(*self.match_tree.get_children())
+        for r in rows:
+            self.match_tree.insert('', 'end', iid=str(r['id']),
+                                   values=(r['item_name'], r['sku'], r['bin_location'] or '—', r['status']))
+        if rows:
+            first_id = str(rows[0]['id'])
+            self.match_tree.selection_set(first_id)
+            self.match_tree.focus(first_id)
+        self.search_matches.pack(fill='both', expand=True, pady=10)
+
+    def show_search_empty(self):
+        self.search_card_wrap.pack_forget()
+        self.search_matches.pack_forget()
+        self.search_empty.pack_forget()
+        self.search_empty.pack(fill='both', expand=True, pady=40)
+
+    def on_match_selected(self):
+        sel = self.match_tree.selection()
+        if sel:
+            item_id = int(sel[0])
+            self.show_search_item(item_id)
+
+    def clear_item_search(self):
+        self.v_item_search.set('')
+        self.l_search_msg.config(text='')
+        self.show_search_empty()
+        self.e_item_search.focus_set()
+
+    def on_search_card_deleted(self, deleted_id):
+        self.clear_item_search()
+        self.refresh()
+
+    def show_in_search_tab(self, item_id):
+        r = self.store.get(item_id)
+        if r:
+            self.v_item_search.set(r['sku'])
+            self.nb.select(self.tab_search)
+            self.show_search_item(item_id)
+            self.l_search_msg.config(text=f'Showing item: {r["sku"]}', fg=TEAL)
 
     def stat_card(self, parent, title, color=None, on_click=None):
         """Builds a card (placed later by the reflow in build_items_tab) and returns its value label."""
@@ -1444,7 +1751,7 @@ class App(tk.Tk):
         self.bind('<Control-n>', lambda e: self.add_item())
         self.bind('<Control-e>', lambda e: self.edit_item())
         self.bind('<Control-i>', lambda e: self.do_import())
-        self.bind('<Control-f>', lambda e: (self.nb.select(self.tab_items), self.e_search.focus_set()))
+        self.bind('<Control-f>', lambda e: (self.nb.select(self.tab_search), self.e_item_search.focus_set()))
         self.bind('<F5>', lambda e: self.refresh())
 
     # ---------- helpers ----------
@@ -1512,6 +1819,8 @@ class App(tk.Tk):
         else:
             self.banner.pack_forget()
         self.update_buttons()
+        if hasattr(self, 'search_card') and self.search_card.item_id:
+            self.search_card.fill()
 
     # ---------- item actions ----------
     def add_item(self):
@@ -1520,7 +1829,7 @@ class App(tk.Tk):
     def open_item(self):
         item_id = self.selected_id()
         if item_id:
-            ItemCard(self, item_id)
+            self.show_in_search_tab(item_id)
 
     def edit_item(self):
         item_id = self.selected_id()
